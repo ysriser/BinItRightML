@@ -1,0 +1,173 @@
+name: BinItRight Python Ultimate DO Pipeline
+
+on:
+  push:
+    branches: ["master"]
+  pull_request:
+    branches: ["master"]
+
+jobs:
+  # BOX 1: QUALITY GATES (Parallel)
+  quality-checks:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run Ruff (Lint)
+        run: pip install ruff && ruff check .
+      - name: Run Pytest (Unit)
+        run: |
+          pip install -r requirements.txt
+          pip install pytest
+          pytest --junitxml=reports/unit-test.xml
+      - name: Upload Test Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-unit-reports
+          path: reports/
+
+  # BOX 2: SCA (Dependency Security)
+  sca-scan:
+    name: SCA (Trivy)
+    needs: quality-checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Trivy SCA
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: "fs"
+          format: "table"
+          output: "sca-report.txt"
+          exit-code: "1" # BLOCKS merge if High/Crit found
+          severity: "CRITICAL,HIGH"
+      - name: Upload SCA Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-sca-results
+          path: sca-report.txt
+
+  # BOX 3: SAST (Code Security)
+  sast-scan:
+    name: SAST (Bandit)
+    needs: sca-scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Bandit
+        run: |
+          pip install bandit
+          bandit -r . -f json -o bandit-results.json || true
+      - name: Upload SAST Fix List
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-sast-fix-list
+          path: bandit-results.json
+      - name: Check for High Risks
+        run: |
+          if grep -q '"issue_severity": "HIGH"' bandit-results.json; then
+            echo "HIGH SEVERITY VULNERABILITIES DETECTED"
+            exit 1
+          fi
+
+  # BOX 4: BUILD & PUSH
+  docker-build:
+    name: 🐳 Docker Build
+    needs: sast-scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Login to DigitalOcean Registry
+        uses: docker/login-action@v3
+        with:
+          registry: registry.digitalocean.com
+          username: _
+          password: ${{ secrets.DO_ACCESS_TOKEN }}
+      - name: Build and Push
+        run: |
+          REG=registry.digitalocean.com/binitright/fastapi-app
+          docker build -t $REG:latest .
+          docker tag $REG:latest $REG:${{ github.sha }}
+          docker push $REG:latest
+          docker push $REG:${{ github.sha }}
+
+  # BOX 5: TRANSIENT DEPLOY
+  deploy-temp:
+    name: 🚀 Deploy to Temp Droplet
+    if: github.event_name == 'pull_request'
+    needs: docker-build
+    runs-on: ubuntu-latest
+    outputs:
+      droplet_ip: ${{ steps.get-ip.outputs.ip }}
+      droplet_id: ${{ steps.create-droplet.outputs.id }}
+    steps:
+      - name: Install doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DO_ACCESS_TOKEN }}
+      - name: Create Temporary Droplet
+        id: create-droplet
+        run: |
+          ID=$(doctl compute droplet create temp-dast-py-${{ github.sha }} \
+            --region nyc1 --size s-1vcpu-1gb --image docker-20-04 \
+            --ssh-keys ${{ secrets.SSH_KEY_ID }} --wait --format ID --no-header)
+          echo "id=$ID" >> $GITHUB_OUTPUT
+      - name: Get Droplet IP
+        id: get-ip
+        run: |
+          IP=$(doctl compute droplet get ${{ steps.create-droplet.outputs.id }} --format PublicIPv4 --no-header)
+          echo "ip=$IP" >> $GITHUB_OUTPUT
+      - name: Deploy FastAPI via SSH
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ steps.get-ip.outputs.ip }}
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            docker login -u _ -p ${{ secrets.DO_ACCESS_TOKEN }} registry.digitalocean.com
+            docker run -d -p 80:80 registry.digitalocean.com/binitright/fastapi-app:${{ github.sha }}
+            sleep 15 # Wait for FastAPI to start
+
+  # BOX 6: DAST ATTACK (ZAP API Scan)
+  dast-scan:
+    name: ⚔️ DAST (ZAP Attack)
+    if: github.event_name == 'pull_request'
+    needs: deploy-temp
+    runs-on: ubuntu-latest
+    steps:
+      - name: OWASP ZAP API Scan
+        uses: zaproxy/action-api-scan@v0.10.0
+        with:
+          # FastAPI's auto-generated docs are usually at /openapi.json
+          target: "http://${{ needs.deploy-temp.outputs.droplet_ip }}/openapi.json"
+          format: openapi
+          fail_action: true # BLOCKS merge if ZAP finds vulnerabilities
+      - name: Upload DAST Findings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-security-report
+          path: |
+            report_html.html
+            report_json.json
+
+  # BOX 7: CLEANUP
+  cleanup:
+    name: 🧹 Cleanup
+    needs: [deploy-temp, dast-scan]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DO_ACCESS_TOKEN }}
+      - name: Destroy Droplet
+        run: doctl compute droplet delete ${{ needs.deploy-temp.outputs.droplet_id }} --force

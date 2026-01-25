@@ -124,6 +124,12 @@ jobs:
         run: |
           IP=$(doctl compute droplet get ${{ steps.create-droplet.outputs.id }} --format PublicIPv4 --no-header)
           echo "ip=$IP" >> $GITHUB_OUTPUT
+      - name: Wait for SSH to wake up
+        run: |
+          for i in {1..12}; do 
+            nc -zv ${{ steps.get-ip.outputs.ip }} 22 && exit 0 || sleep 5; 
+          done
+          exit 1
       - name: Deploy FastAPI via SSH
         uses: appleboy/ssh-action@master
         with:

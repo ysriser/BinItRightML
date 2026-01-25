@@ -9,7 +9,7 @@ on:
 jobs:
   # BOX 1: QUALITY & LOGIC (Parallel)
   quality-checks:
-    name: Quality & Tests
+    name: Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -158,6 +158,7 @@ jobs:
         with:
           target: "http://${{ needs.deploy-temp.outputs.droplet_ip }}/openapi.json"
           format: openapi
+          allow_issue_writing: false # Stops the 403 error and issue creation
           fail_action: true
       - name: Upload DAST Findings
         if: always()
@@ -170,7 +171,7 @@ jobs:
 
   # BOX 7: CLEANUP
   cleanup:
-    name: 🧹 Cleanup
+    name: Cleanup
     needs: [deploy-temp, dast-scan]
     # FIX: Only run if deploy-temp was NOT skipped and actually produced an ID
     if: always() && needs.deploy-temp.result != 'skipped' && needs.deploy-temp.outputs.droplet_id != ''

@@ -9,7 +9,7 @@ on:
 jobs:
   # BOX 1: QUALITY & LOGIC (Parallel)
   quality-checks:
-    name: Quality & Tests
+    name: Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -124,12 +124,20 @@ jobs:
         run: |
           IP=$(doctl compute droplet get ${{ steps.create-droplet.outputs.id }} --format PublicIPv4 --no-header)
           echo "ip=$IP" >> $GITHUB_OUTPUT
+      - name: Wait for SSH to wake up
+        run: |
+          for i in {1..12}; do 
+            nc -zv ${{ steps.get-ip.outputs.ip }} 22 && exit 0 || sleep 5; 
+          done
+          exit 1
       - name: Deploy FastAPI via SSH
         uses: appleboy/ssh-action@master
         with:
           host: ${{ steps.get-ip.outputs.ip }}
           username: root
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          command_timeout: 15m
+          timeout: 60s
           script: |
             docker login -u _ -p ${{ secrets.DO_ACCESS_TOKEN }} registry.digitalocean.com
             # Stop existing if it exists
@@ -150,6 +158,7 @@ jobs:
         with:
           target: "http://${{ needs.deploy-temp.outputs.droplet_ip }}/openapi.json"
           format: openapi
+          allow_issue_writing: false # Stops the 403 error and issue creation
           fail_action: true
       - name: Upload DAST Findings
         if: always()
@@ -162,7 +171,7 @@ jobs:
 
   # BOX 7: CLEANUP
   cleanup:
-    name: 🧹 Cleanup
+    name: Cleanup
     needs: [deploy-temp, dast-scan]
     # FIX: Only run if deploy-temp was NOT skipped and actually produced an ID
     if: always() && needs.deploy-temp.result != 'skipped' && needs.deploy-temp.outputs.droplet_id != ''
@@ -174,3 +183,26 @@ jobs:
           token: ${{ secrets.DO_ACCESS_TOKEN }}
       - name: Destroy Droplet
         run: doctl compute droplet delete ${{ needs.deploy-temp.outputs.droplet_id }} --force
+
+  deploy-production:
+    name: 🚀 Production Deploy
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    needs: [docker-build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to Prod via SSH
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.PROD_IP }}
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            docker login -u _ -p ${{ secrets.DO_ACCESS_TOKEN }} registry.digitalocean.com
+            docker stop binitright-python-prod || true
+            docker rm binitright-python-prod || true
+            docker pull registry.digitalocean.com/binitright/binitright-app:python-latest
+            docker run -d \
+              --name binitright-python-prod \
+              --restart always \
+              -p 8000:80 \
+              registry.digitalocean.com/binitright/binitright-app:python-latest

@@ -183,3 +183,26 @@ jobs:
           token: ${{ secrets.DO_ACCESS_TOKEN }}
       - name: Destroy Droplet
         run: doctl compute droplet delete ${{ needs.deploy-temp.outputs.droplet_id }} --force
+
+  deploy-production:
+    name: 🚀 Production Deploy
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    needs: [docker-build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to Prod via SSH
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.PROD_IP }}
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            docker login -u _ -p ${{ secrets.DO_ACCESS_TOKEN }} registry.digitalocean.com
+            docker stop binitright-python-prod || true
+            docker rm binitright-python-prod || true
+            docker pull registry.digitalocean.com/binitright/binitright-app:python-latest
+            docker run -d \
+              --name binitright-python-prod \
+              --restart always \
+              -p 8000:80 \
+              registry.digitalocean.com/binitright/binitright-app:python-latest

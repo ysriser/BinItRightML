@@ -136,6 +136,8 @@ jobs:
           host: ${{ steps.get-ip.outputs.ip }}
           username: root
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          command_timeout: 15m
+          timeout: 60s
           script: |
             docker login -u _ -p ${{ secrets.DO_ACCESS_TOKEN }} registry.digitalocean.com
             # Stop existing if it exists

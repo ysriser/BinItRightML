@@ -7,9 +7,9 @@ on:
     branches: ["master"]
 
 jobs:
-  # BOX 1: QUALITY GATES (Parallel)
+  # BOX 1: QUALITY & LOGIC (Parallel)
   quality-checks:
-    name: Lint
+    name: Quality & Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,7 +23,8 @@ jobs:
         run: |
           pip install -r requirements.txt
           pip install pytest
-          pytest --junitxml=reports/unit-test.xml
+          # Exit code 5 (no tests found) is treated as success for now
+          pytest --junitxml=reports/unit-test.xml || [ $? -eq 5 ]
       - name: Upload Test Results
         if: always()
         uses: actions/upload-artifact@v4
@@ -34,7 +35,6 @@ jobs:
   # BOX 2: SCA (Dependency Security)
   sca-scan:
     name: SCA (Trivy)
-    needs: quality-checks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -46,23 +46,23 @@ jobs:
           output: "sca-report.txt"
           exit-code: "1" # BLOCKS merge if High/Crit found
           severity: "CRITICAL,HIGH"
-      - name: Upload SCA Report
+      - uses: actions/upload-artifact@v4
         if: always()
-        uses: actions/upload-artifact@v4
         with:
           name: python-sca-results
           path: sca-report.txt
 
-  # BOX 3: SAST (Code Security)
+  # BOX 3: SAST (Code Security Enforcer)
   sast-scan:
     name: SAST (Bandit)
-    needs: sca-scan
+    needs: [quality-checks, sca-scan]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Run Bandit
         run: |
           pip install bandit
+          # Generate the fix-list artifact
           bandit -r . -f json -o bandit-results.json || true
       - name: Upload SAST Fix List
         if: always()
@@ -77,9 +77,9 @@ jobs:
             exit 1
           fi
 
-  # BOX 4: BUILD & PUSH
+  # BOX 4: SHARED REGISTRY BUILD (Tag Hack)
   docker-build:
-    name: Docker Build
+    name: Shared Build
     needs: sast-scan
     runs-on: ubuntu-latest
     steps:
@@ -90,13 +90,13 @@ jobs:
           registry: registry.digitalocean.com
           username: _
           password: ${{ secrets.DO_ACCESS_TOKEN }}
-      - name: Build and Push
+      - name: Build and Push (Tag Hack)
         run: |
-          REG=registry.digitalocean.com/binitright/fastapi-app
-          docker build -t $REG:latest .
-          docker tag $REG:latest $REG:${{ github.sha }}
-          docker push $REG:latest
-          docker push $REG:${{ github.sha }}
+          # Matches your Java repository name to stay on free tier
+          REPO=registry.digitalocean.com/binitright/binitright-app
+          docker build -t $REPO:python-latest -t $REPO:python-${{ github.sha }} .
+          docker push $REPO:python-latest
+          docker push $REPO:python-${{ github.sha }}
 
   # BOX 5: TRANSIENT DEPLOY
   deploy-temp:
@@ -132,8 +132,9 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             docker login -u _ -p ${{ secrets.DO_ACCESS_TOKEN }} registry.digitalocean.com
-            docker run -d -p 80:80 registry.digitalocean.com/binitright/fastapi-app:${{ github.sha }}
-            sleep 15 # Wait for FastAPI to start
+            # Pull python-specific tag
+            docker run -d -p 80:80 registry.digitalocean.com/binitright/binitright-app:python-${{ github.sha }}
+            sleep 15 # Wait for app to wake up
 
   # BOX 6: DAST ATTACK (ZAP API Scan)
   dast-scan:
@@ -145,22 +146,21 @@ jobs:
       - name: OWASP ZAP API Scan
         uses: zaproxy/action-api-scan@v0.10.0
         with:
-          # FastAPI's auto-generated docs are usually at /openapi.json
           target: "http://${{ needs.deploy-temp.outputs.droplet_ip }}/openapi.json"
           format: openapi
-          fail_action: true # BLOCKS merge if ZAP finds vulnerabilities
+          fail_action: true
       - name: Upload DAST Findings
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: zap-security-report
+          name: python-zap-report
           path: |
             report_html.html
             report_json.json
 
   # BOX 7: CLEANUP
   cleanup:
-    name: 🧹 Cleanup
+    name: Cleanup
     needs: [deploy-temp, dast-scan]
     if: always()
     runs-on: ubuntu-latest

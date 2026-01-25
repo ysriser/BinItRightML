@@ -132,9 +132,11 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             docker login -u _ -p ${{ secrets.DO_ACCESS_TOKEN }} registry.digitalocean.com
-            # Pull python-specific tag
-            docker run -d -p 80:80 registry.digitalocean.com/binitright/binitright-app:python-${{ github.sha }}
-            sleep 15 # Wait for app to wake up
+            # Stop existing if it exists
+            docker stop binitright-python || true
+            docker rm binitright-python || true
+            # Run with a name
+            docker run -d --name binitright-python -p 80:80 registry.digitalocean.com/binitright/binitright-app:python-${{ github.sha }}
 
   # BOX 6: DAST ATTACK (ZAP API Scan)
   dast-scan:
@@ -160,9 +162,10 @@ jobs:
 
   # BOX 7: CLEANUP
   cleanup:
-    name: Cleanup
+    name: 🧹 Cleanup
     needs: [deploy-temp, dast-scan]
-    if: always()
+    # FIX: Only run if deploy-temp was NOT skipped and actually produced an ID
+    if: always() && needs.deploy-temp.result != 'skipped' && needs.deploy-temp.outputs.droplet_id != ''
     runs-on: ubuntu-latest
     steps:
       - name: Install doctl

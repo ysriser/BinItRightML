@@ -79,7 +79,7 @@ jobs:
 
   # BOX 4: BUILD & PUSH
   docker-build:
-    name: 🐳 Docker Build
+    name: Docker Build
     needs: sast-scan
     runs-on: ubuntu-latest
     steps:
@@ -100,7 +100,7 @@ jobs:
 
   # BOX 5: TRANSIENT DEPLOY
   deploy-temp:
-    name: 🚀 Deploy to Temp Droplet
+    name: Deploy to Temp Droplet
     if: github.event_name == 'pull_request'
     needs: docker-build
     runs-on: ubuntu-latest
@@ -137,7 +137,7 @@ jobs:
 
   # BOX 6: DAST ATTACK (ZAP API Scan)
   dast-scan:
-    name: ⚔️ DAST (ZAP Attack)
+    name: DAST (ZAP Attack)
     if: github.event_name == 'pull_request'
     needs: deploy-temp
     runs-on: ubuntu-latest

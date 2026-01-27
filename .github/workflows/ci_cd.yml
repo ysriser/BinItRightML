@@ -1,4 +1,4 @@
-name: BinItRight Python Ultimate DO Pipeline
+name: BinItRight Python CICD Pipeline
 
 on:
   push:
@@ -6,31 +6,35 @@ on:
   pull_request:
     branches: ["master"]
 
-# This specific group key is the "Fix":
-# It ensures that Push events and PR events on the same branch
-# are recognized as the same "run," and only the latest (PR) survives.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
-  # BOX 1: QUALITY & LOGIC (Parallel)
+  # ==========================================
+  # BOX 1: QUALITY & LOGIC
+  # ==========================================
   quality-checks:
     name: Lint
     runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.event.pull_request == null || github.ref == 'refs/heads/master'
     steps:
       - uses: actions/checkout@v4
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
       - name: Run Ruff (Lint)
         run: pip install ruff && ruff check .
+
       - name: Run Pytest (Unit)
         run: |
           pip install -r requirements.txt
           pip install pytest
           pytest --junitxml=reports/unit-test.xml || [ $? -eq 5 ]
+
       - name: Upload Test Results
         if: always()
         uses: actions/upload-artifact@v4
@@ -38,12 +42,17 @@ jobs:
           name: python-unit-reports
           path: reports/
 
+  # ==========================================
   # BOX 2: SCA (Dependency Security)
+  # ==========================================
   sca-scan:
     name: SCA (Trivy)
+    needs: [quality-checks]
     runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.event.pull_request == null || github.ref == 'refs/heads/master'
     steps:
       - uses: actions/checkout@v4
+
       - name: Run Trivy SCA
         uses: aquasecurity/trivy-action@master
         with:
@@ -52,29 +61,36 @@ jobs:
           output: "sca-report.txt"
           exit-code: "1"
           severity: "CRITICAL,HIGH"
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: python-sca-results
           path: sca-report.txt
 
+  # ==========================================
   # BOX 3: SAST (Code Security Enforcer)
+  # ==========================================
   sast-scan:
     name: SAST (Bandit)
     needs: [quality-checks, sca-scan]
     runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.event.pull_request == null || github.ref == 'refs/heads/master'
     steps:
       - uses: actions/checkout@v4
+
       - name: Run Bandit
         run: |
           pip install bandit
           bandit -r . -f json -o bandit-results.json || true
+
       - name: Upload SAST Fix List
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: python-sast-fix-list
           path: bandit-results.json
+
       - name: Check for High Risks
         run: |
           if grep -q '"issue_severity": "HIGH"' bandit-results.json; then
@@ -82,31 +98,46 @@ jobs:
             exit 1
           fi
 
+  # ==========================================
   # BOX 4: SHARED REGISTRY BUILD
+  # ==========================================
   docker-build:
     name: Shared Build
     needs: sast-scan
     runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.event.pull_request == null || github.ref == 'refs/heads/master'
     steps:
       - uses: actions/checkout@v4
+
       - name: Login to DigitalOcean Registry
         uses: docker/login-action@v3
         with:
           registry: registry.digitalocean.com
           username: _
           password: ${{ secrets.DO_ACCESS_TOKEN }}
-      - name: Build and Push (Tag Hack)
-        run: |
-          REPO=registry.digitalocean.com/binitright/binitright-app
-          docker build -t $REPO:python-latest -t $REPO:python-${{ github.sha }} .
-          docker push $REPO:python-latest
-          docker push $REPO:python-${{ github.sha }}
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and Push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          # Add this line to ensure it uses the credentials we just set up
+          provenance: false
+          tags: |
+            registry.digitalocean.com/binitright/binitright-app:python-latest
+            registry.digitalocean.com/binitright/binitright-app:python-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ==========================================
   # BOX 5: TRANSIENT DEPLOY
+  # ==========================================
   deploy-temp:
     name: Deploy to Temp Droplet
-    # Runs ONLY on PRs so you don't pay for droplets on every minor push
-    if: github.event_name == 'pull_request'
+    if: github.ref != 'refs/heads/master' && (github.event_name == 'pull_request' || github.event.pull_request == null)
     needs: docker-build
     runs-on: ubuntu-latest
     outputs:
@@ -117,6 +148,7 @@ jobs:
         uses: digitalocean/action-doctl@v2
         with:
           token: ${{ secrets.DO_ACCESS_TOKEN }}
+
       - name: Create Temporary Droplet
         id: create-droplet
         run: |
@@ -124,45 +156,60 @@ jobs:
             --region nyc1 --size s-1vcpu-1gb --image docker-20-04 \
             --ssh-keys ${{ secrets.SSH_KEY_ID }} --wait --format ID --no-header)
           echo "id=$ID" >> $GITHUB_OUTPUT
+
       - name: Get Droplet IP
         id: get-ip
         run: |
           IP=$(doctl compute droplet get ${{ steps.create-droplet.outputs.id }} --format PublicIPv4 --no-header)
           echo "ip=$IP" >> $GITHUB_OUTPUT
+
       - name: Wait for SSH to wake up
         run: |
-          for i in {1..12}; do 
-            nc -zv ${{ steps.get-ip.outputs.ip }} 22 && exit 0 || sleep 5; 
+          for i in {1..20}; do 
+            if nc -zv -w 5 ${{ steps.get-ip.outputs.ip }} 22; then
+              sleep 15
+              exit 0
+            fi
+            sleep 5
           done
           exit 1
+
       - name: Deploy FastAPI via SSH
         uses: appleboy/ssh-action@master
         with:
           host: ${{ steps.get-ip.outputs.ip }}
           username: root
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          command_timeout: 15m
-          timeout: 60s
+          timeout: 90s
           script: |
+            until docker info >/dev/null 2>&1; do sleep 2; done
             docker login -u _ -p ${{ secrets.DO_ACCESS_TOKEN }} registry.digitalocean.com
             docker stop binitright-python || true
             docker rm binitright-python || true
             docker run -d --name binitright-python -p 80:80 registry.digitalocean.com/binitright/binitright-app:python-${{ github.sha }}
 
+  # ==========================================
   # BOX 6: DAST ATTACK (ZAP API Scan)
+  # ==========================================
   dast-scan:
     name: DAST (ZAP Attack)
-    if: github.event_name == 'pull_request'
+    if: github.ref != 'refs/heads/master' && (github.event_name == 'pull_request' || github.event.pull_request == null)
     needs: deploy-temp
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
     steps:
       - name: OWASP ZAP API Scan
-        uses: zaproxy/action-api-scan@v0.10.0
+        uses: zaproxy/action-api-scan@v0.10.0 # Changed from v0.12.0 to v0.10.0
         with:
+          # Use the built-in token so the Search API can validate the repo
+          token: ${{ secrets.GITHUB_TOKEN }}
           target: "http://${{ needs.deploy-temp.outputs.droplet_ip }}/openapi.json"
           format: openapi
-          allow_issue_writing: false
           fail_action: true
+          create_issue: false # Still set to false to avoid cluttering your repo
+
       - name: Upload DAST Findings
         if: always()
         uses: actions/upload-artifact@v4
@@ -172,23 +219,28 @@ jobs:
             report_html.html
             report_json.json
 
+  # ==========================================
   # BOX 7: CLEANUP
+  # ==========================================
   cleanup:
     name: Cleanup
     needs: [deploy-temp, dast-scan]
-    if: always() && needs.deploy-temp.result != 'skipped' && needs.deploy-temp.outputs.droplet_id != ''
+    if: always() && github.ref != 'refs/heads/master' && needs.deploy-temp.outputs.droplet_id != ''
     runs-on: ubuntu-latest
     steps:
       - name: Install doctl
         uses: digitalocean/action-doctl@v2
         with:
           token: ${{ secrets.DO_ACCESS_TOKEN }}
+
       - name: Destroy Droplet
         run: doctl compute droplet delete ${{ needs.deploy-temp.outputs.droplet_id }} --force
 
+  # ==========================================
+  # BOX 8: PRODUCTION DEPLOY
+  # ==========================================
   deploy-production:
-    name: 🚀 Production Deploy
-    # Strict filter: only push event on master branch
+    name: Production Deploy
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     needs: [docker-build]
     runs-on: ubuntu-latest
@@ -209,3 +261,34 @@ jobs:
               --restart always \
               -p 8000:80 \
               registry.digitalocean.com/binitright/binitright-app:python-latest
+
+  # ==========================================
+  # BOX 9: TARGETED PYTHON CLEANUP
+  # ==========================================
+  registry-maintenance:
+    name: Prune Python Tags & GC
+    needs: [deploy-production, cleanup]
+    if: always() && (needs.deploy-production.result == 'success' || needs.cleanup.result == 'success')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DO_ACCESS_TOKEN }}
+
+      - name: Delete Old Python Tags (Keep 2)
+        run: |
+          # 1. List tags for binitright-app
+          # 2. Filter for ONLY tags starting with 'python-'
+          # 3. Sort by date and skip the 5 newest python tags
+          TAGS_TO_DELETE=$(doctl registry repository list-tags binitright-app --format Tag,UpdatedAt --no-header | \
+            grep "^python-" | \
+            sort -k2 -r | awk 'NR>2 {print $1}')
+
+          for TAG in $TAGS_TO_DELETE; do
+            # SAFETY: Never delete the 'latest' tag or the one currently being deployed
+            if [[ "$TAG" != "python-latest" && "$TAG" != "python-${{ github.sha }}" ]]; then
+              echo "Deleting Python tag: $TAG"
+              doctl registry repository delete-tag binitright-app $TAG --force
+            fi
+          done

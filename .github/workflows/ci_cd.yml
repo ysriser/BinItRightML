@@ -11,10 +11,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # BOX 1-3: Quality, SCA, and SAST (Runs on every single push/PR)
+  # BOX 1: QUALITY & LOGIC
   quality-checks:
     name: Lint
     runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.event.pull_request == null || github.ref == 'refs/heads/master'
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python
@@ -28,6 +29,7 @@ jobs:
           pip install -r requirements.txt
           pip install pytest
           pytest --junitxml=reports/unit-test.xml || [ $? -eq 5 ]
+      # RESTORED ARTIFACT
       - name: Upload Test Results
         if: always()
         uses: actions/upload-artifact@v4
@@ -35,9 +37,11 @@ jobs:
           name: python-unit-reports
           path: reports/
 
+  # BOX 2: SCA
   sca-scan:
     name: SCA (Trivy)
     runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.event.pull_request == null || github.ref == 'refs/heads/master'
     steps:
       - uses: actions/checkout@v4
       - name: Run Trivy SCA
@@ -48,28 +52,45 @@ jobs:
           output: "sca-report.txt"
           exit-code: "1"
           severity: "CRITICAL,HIGH"
+      # RESTORED ARTIFACT
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: python-sca-results
+          path: sca-report.txt
 
+  # BOX 3: SAST
   sast-scan:
     name: SAST (Bandit)
     needs: [quality-checks, sca-scan]
     runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.event.pull_request == null || github.ref == 'refs/heads/master'
     steps:
       - uses: actions/checkout@v4
       - name: Run Bandit
         run: |
           pip install bandit
           bandit -r . -f json -o bandit-results.json || true
+      # RESTORED ARTIFACT
+      - name: Upload SAST Fix List
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-sast-fix-list
+          path: bandit-results.json
       - name: Check for High Risks
         run: |
           if grep -q '"issue_severity": "HIGH"' bandit-results.json; then
+            echo "HIGH SEVERITY VULNERABILITIES DETECTED"
             exit 1
           fi
 
-  # BOX 4: SHARED REGISTRY BUILD (Runs on every single push/PR)
+  # BOX 4: SHARED REGISTRY BUILD
   docker-build:
     name: Shared Build
     needs: sast-scan
     runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.event.pull_request == null || github.ref == 'refs/heads/master'
     steps:
       - uses: actions/checkout@v4
       - name: Login to DigitalOcean Registry
@@ -91,10 +112,10 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # BOX 5: TRANSIENT DEPLOY (Runs on every branch EXCEPT master)
+  # BOX 5: TRANSIENT DEPLOY
   deploy-temp:
     name: Deploy to Temp Droplet
-    if: github.ref != 'refs/heads/master'
+    if: github.ref != 'refs/heads/master' && (github.event_name == 'pull_request' || github.event.pull_request == null)
     needs: docker-build
     runs-on: ubuntu-latest
     outputs:
@@ -117,7 +138,7 @@ jobs:
         run: |
           IP=$(doctl compute droplet get ${{ steps.create-droplet.outputs.id }} --format PublicIPv4 --no-header)
           echo "ip=$IP" >> $GITHUB_OUTPUT
-      - name: Wait for SSH to wake up
+      - name: Wait for SSH
         run: |
           for i in {1..20}; do 
             if nc -zv -w 5 ${{ steps.get-ip.outputs.ip }} 22; then
@@ -127,7 +148,7 @@ jobs:
             sleep 5
           done
           exit 1
-      - name: Deploy FastAPI via SSH
+      - name: Deploy FastAPI
         uses: appleboy/ssh-action@master
         with:
           host: ${{ steps.get-ip.outputs.ip }}
@@ -141,10 +162,10 @@ jobs:
             docker rm binitright-python || true
             docker run -d --name binitright-python -p 80:80 registry.digitalocean.com/binitright/binitright-app:python-${{ github.sha }}
 
-  # BOX 6: DAST ATTACK (Runs on every branch EXCEPT master)
+  # BOX 6: DAST ATTACK
   dast-scan:
     name: DAST (ZAP Attack)
-    if: github.ref != 'refs/heads/master'
+    if: github.ref != 'refs/heads/master' && (github.event_name == 'pull_request' || github.event.pull_request == null)
     needs: deploy-temp
     runs-on: ubuntu-latest
     steps:
@@ -154,8 +175,17 @@ jobs:
           target: "http://${{ needs.deploy-temp.outputs.droplet_ip }}/openapi.json"
           format: openapi
           fail_action: true
+      # RESTORED ARTIFACT
+      - name: Upload DAST Findings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-zap-report
+          path: |
+            report_html.html
+            report_json.json
 
-  # BOX 7: CLEANUP (Runs on every branch EXCEPT master)
+  # BOX 7: CLEANUP
   cleanup:
     name: Cleanup
     needs: [deploy-temp, dast-scan]
@@ -169,7 +199,7 @@ jobs:
       - name: Destroy Droplet
         run: doctl compute droplet delete ${{ needs.deploy-temp.outputs.droplet_id }} --force
 
-  # BOX 8: PRODUCTION (ONLY ON MASTER MERGE/PUSH)
+  # BOX 8: PRODUCTION
   deploy-production:
     name: 🚀 Production Deploy
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'

@@ -270,9 +270,13 @@ jobs:
   # BOX 9: TARGETED PYTHON CLEANUP
   # ==========================================
   registry-maintenance:
-    name: Prune Python Tags & GC
-    needs: [deploy-production, cleanup]
-    if: always() && (needs.deploy-production.result == 'success' || needs.cleanup.result == 'success')
+    name: Prune Python Tags
+    needs: [docker-build, deploy-production, cleanup]
+    # Runs if build succeeded, even if deploy/cleanup were skipped.
+    if: |
+      always() && 
+      needs.docker-build.result == 'success' && 
+      !cancelled()
     runs-on: ubuntu-latest
     steps:
       - name: Install doctl
@@ -282,17 +286,27 @@ jobs:
 
       - name: Delete Old Python Tags (Keep 2)
         run: |
-          # 1. List tags for binitright-app
-          # 2. Filter for ONLY tags starting with 'python-'
-          # 3. Sort by date and skip the 5 newest python tags
-          TAGS_TO_DELETE=$(doctl registry repository list-tags binitright-app --format Tag,UpdatedAt --no-header | \
-            grep "^python-" | \
-            sort -k2 -r | awk 'NR>2 {print $1}')
+          # 1. Fetch tags - the || echo "" prevents the script from crashing if registry is empty
+          RAW_TAGS=$(doctl registry repository list-tags binitright-app --format Tag,UpdatedAt --no-header || echo "")
 
+          if [ -z "$RAW_TAGS" ]; then
+            echo "No tags found. Skipping prune."
+            exit 0
+          fi
+
+          # 2. Filter for python- prefix, sort newest first, skip top 2
+          TAGS_TO_DELETE=$(echo "$RAW_TAGS" | grep "^python-" | sort -k2 -r | awk 'NR>2 {print $1}')
+
+          if [ -z "$TAGS_TO_DELETE" ]; then
+            echo "Registry is already clean (2 or fewer tags)."
+            exit 0
+          fi
+
+          # 3. Secure Deletion Loop
           for TAG in $TAGS_TO_DELETE; do
-            # SAFETY: Never delete the 'latest' tag or the one currently being deployed
+            # NEVER delete the tag we just created in this run
             if [[ "$TAG" != "python-latest" && "$TAG" != "python-${{ github.sha }}" ]]; then
-              echo "Deleting Python tag: $TAG"
+              echo "Pruning old tag: $TAG"
               doctl registry repository delete-tag binitright-app $TAG --force
             fi
           done

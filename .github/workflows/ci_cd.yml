@@ -47,6 +47,7 @@ jobs:
   # ==========================================
   sca-scan:
     name: SCA (Trivy)
+    needs: [quality-checks]
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request' || github.event.pull_request == null || github.ref == 'refs/heads/master'
     steps:

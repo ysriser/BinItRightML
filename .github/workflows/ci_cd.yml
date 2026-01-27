@@ -2,9 +2,16 @@ name: BinItRight Python Ultimate DO Pipeline
 
 on:
   push:
-    branches: ["master"]
+    # Now triggers on EVERY branch push
+    branches: ["**"]
   pull_request:
     branches: ["master"]
+
+# The concurrency group is key here. By using the 'github.ref',
+# we ensure that pushes to the same branch cancel each other out.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   # BOX 1: QUALITY & LOGIC (Parallel)
@@ -23,7 +30,6 @@ jobs:
         run: |
           pip install -r requirements.txt
           pip install pytest
-          # Exit code 5 (no tests found) is treated as success for now
           pytest --junitxml=reports/unit-test.xml || [ $? -eq 5 ]
       - name: Upload Test Results
         if: always()
@@ -44,7 +50,7 @@ jobs:
           scan-type: "fs"
           format: "table"
           output: "sca-report.txt"
-          exit-code: "1" # BLOCKS merge if High/Crit found
+          exit-code: "1"
           severity: "CRITICAL,HIGH"
       - uses: actions/upload-artifact@v4
         if: always()
@@ -62,7 +68,6 @@ jobs:
       - name: Run Bandit
         run: |
           pip install bandit
-          # Generate the fix-list artifact
           bandit -r . -f json -o bandit-results.json || true
       - name: Upload SAST Fix List
         if: always()
@@ -77,7 +82,7 @@ jobs:
             exit 1
           fi
 
-  # BOX 4: SHARED REGISTRY BUILD (Tag Hack)
+  # BOX 4: SHARED REGISTRY BUILD
   docker-build:
     name: Shared Build
     needs: sast-scan
@@ -92,7 +97,6 @@ jobs:
           password: ${{ secrets.DO_ACCESS_TOKEN }}
       - name: Build and Push (Tag Hack)
         run: |
-          # Matches your Java repository name to stay on free tier
           REPO=registry.digitalocean.com/binitright/binitright-app
           docker build -t $REPO:python-latest -t $REPO:python-${{ github.sha }} .
           docker push $REPO:python-latest
@@ -101,6 +105,7 @@ jobs:
   # BOX 5: TRANSIENT DEPLOY
   deploy-temp:
     name: Deploy to Temp Droplet
+    # Runs ONLY on PRs so you don't pay for droplets on every minor push
     if: github.event_name == 'pull_request'
     needs: docker-build
     runs-on: ubuntu-latest
@@ -140,10 +145,8 @@ jobs:
           timeout: 60s
           script: |
             docker login -u _ -p ${{ secrets.DO_ACCESS_TOKEN }} registry.digitalocean.com
-            # Stop existing if it exists
             docker stop binitright-python || true
             docker rm binitright-python || true
-            # Run with a name
             docker run -d --name binitright-python -p 80:80 registry.digitalocean.com/binitright/binitright-app:python-${{ github.sha }}
 
   # BOX 6: DAST ATTACK (ZAP API Scan)
@@ -158,7 +161,7 @@ jobs:
         with:
           target: "http://${{ needs.deploy-temp.outputs.droplet_ip }}/openapi.json"
           format: openapi
-          allow_issue_writing: false # Stops the 403 error and issue creation
+          allow_issue_writing: false
           fail_action: true
       - name: Upload DAST Findings
         if: always()
@@ -173,7 +176,6 @@ jobs:
   cleanup:
     name: Cleanup
     needs: [deploy-temp, dast-scan]
-    # FIX: Only run if deploy-temp was NOT skipped and actually produced an ID
     if: always() && needs.deploy-temp.result != 'skipped' && needs.deploy-temp.outputs.droplet_id != ''
     runs-on: ubuntu-latest
     steps:
@@ -186,6 +188,7 @@ jobs:
 
   deploy-production:
     name: 🚀 Production Deploy
+    # Strict filter: only push event on master branch
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     needs: [docker-build]
     runs-on: ubuntu-latest

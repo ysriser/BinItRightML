@@ -123,6 +123,8 @@ jobs:
         with:
           context: .
           push: true
+          # Add this line to ensure it uses the credentials we just set up
+          provenance: false
           tags: |
             registry.digitalocean.com/binitright/binitright-app:python-latest
             registry.digitalocean.com/binitright/binitright-app:python-${{ github.sha }}

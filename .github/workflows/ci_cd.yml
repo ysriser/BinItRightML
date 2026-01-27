@@ -6,9 +6,6 @@ on:
   pull_request:
     branches: ["master"]
 
-# This specific group key is the "Fix":
-# It ensures that Push events and PR events on the same branch
-# are recognized as the same "run," and only the latest (PR) survives.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -102,10 +99,9 @@ jobs:
           docker push $REPO:python-latest
           docker push $REPO:python-${{ github.sha }}
 
-  # BOX 5: TRANSIENT DEPLOY
+  # BOX 5: TRANSIENT DEPLOY (PR ONLY)
   deploy-temp:
     name: Deploy to Temp Droplet
-    # Runs ONLY on PRs so you don't pay for droplets on every minor push
     if: github.event_name == 'pull_request'
     needs: docker-build
     runs-on: ubuntu-latest
@@ -149,7 +145,7 @@ jobs:
             docker rm binitright-python || true
             docker run -d --name binitright-python -p 80:80 registry.digitalocean.com/binitright/binitright-app:python-${{ github.sha }}
 
-  # BOX 6: DAST ATTACK (ZAP API Scan)
+  # BOX 6: DAST ATTACK (ZAP API Scan - PR ONLY)
   dast-scan:
     name: DAST (ZAP Attack)
     if: github.event_name == 'pull_request'
@@ -172,11 +168,12 @@ jobs:
             report_html.html
             report_json.json
 
-  # BOX 7: CLEANUP
+  # BOX 7: CLEANUP (PR ONLY)
   cleanup:
     name: Cleanup
     needs: [deploy-temp, dast-scan]
-    if: always() && needs.deploy-temp.result != 'skipped' && needs.deploy-temp.outputs.droplet_id != ''
+    # Logic: Only run if it's a PR AND a droplet was actually created (avoids errors on standard pushes)
+    if: always() && github.event_name == 'pull_request' && needs.deploy-temp.outputs.droplet_id != ''
     runs-on: ubuntu-latest
     steps:
       - name: Install doctl
@@ -186,9 +183,9 @@ jobs:
       - name: Destroy Droplet
         run: doctl compute droplet delete ${{ needs.deploy-temp.outputs.droplet_id }} --force
 
+  # BOX 8: PRODUCTION (MASTER ONLY)
   deploy-production:
     name: 🚀 Production Deploy
-    # Strict filter: only push event on master branch
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     needs: [docker-build]
     runs-on: ubuntu-latest

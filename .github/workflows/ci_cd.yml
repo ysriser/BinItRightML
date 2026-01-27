@@ -109,18 +109,6 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Build and Push
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: true
-          tags: |
-            registry.digitalocean.com/binitright/binitright-app:python-latest
-            registry.digitalocean.com/binitright/binitright-app:python-${{ github.sha }}
-          # This caches layers to make builds faster and more stable
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
   # BOX 5: TRANSIENT DEPLOY (PR ONLY)
   deploy-temp:
     name: Deploy to Temp Droplet

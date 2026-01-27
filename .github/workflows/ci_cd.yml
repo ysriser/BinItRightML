@@ -190,10 +190,6 @@ jobs:
   # ==========================================
   dast-scan:
     name: DAST (ZAP Attack)
-    # This block prevents the 403 error by removing Issue access
-    permissions:
-      contents: read
-      issues: none
     if: github.ref != 'refs/heads/master' && (github.event_name == 'pull_request' || github.event.pull_request == null)
     needs: deploy-temp
     runs-on: ubuntu-latest
@@ -201,6 +197,7 @@ jobs:
       - name: OWASP ZAP API Scan
         uses: zaproxy/action-api-scan@v0.10.0
         with:
+          token: "" # Forces the action to ignore GitHub API and stops the 403 error
           target: "http://${{ needs.deploy-temp.outputs.droplet_ip }}/openapi.json"
           format: openapi
           fail_action: true

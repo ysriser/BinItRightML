@@ -87,18 +87,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Login to DigitalOcean Registry
         uses: docker/login-action@v3
         with:
           registry: registry.digitalocean.com
           username: _
           password: ${{ secrets.DO_ACCESS_TOKEN }}
-      - name: Build and Push (Tag Hack)
-        run: |
-          REPO=registry.digitalocean.com/binitright/binitright-app
-          docker build -t $REPO:python-latest -t $REPO:python-${{ github.sha }} .
-          docker push $REPO:python-latest
-          docker push $REPO:python-${{ github.sha }}
+
+      - name: Build and Push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            registry.digitalocean.com/binitright/binitright-app:python-latest
+            registry.digitalocean.com/binitright/binitright-app:python-${{ github.sha }}
+          # This caches layers to make builds faster and more stable
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   # BOX 5: TRANSIENT DEPLOY (PR ONLY)
   deploy-temp:
@@ -114,6 +121,7 @@ jobs:
         uses: digitalocean/action-doctl@v2
         with:
           token: ${{ secrets.DO_ACCESS_TOKEN }}
+
       - name: Create Temporary Droplet
         id: create-droplet
         run: |
@@ -121,26 +129,39 @@ jobs:
             --region nyc1 --size s-1vcpu-1gb --image docker-20-04 \
             --ssh-keys ${{ secrets.SSH_KEY_ID }} --wait --format ID --no-header)
           echo "id=$ID" >> $GITHUB_OUTPUT
+
       - name: Get Droplet IP
         id: get-ip
         run: |
           IP=$(doctl compute droplet get ${{ steps.create-droplet.outputs.id }} --format PublicIPv4 --no-header)
           echo "ip=$IP" >> $GITHUB_OUTPUT
+
       - name: Wait for SSH to wake up
         run: |
-          for i in {1..12}; do 
-            nc -zv ${{ steps.get-ip.outputs.ip }} 22 && exit 0 || sleep 5; 
+          echo "Probing Port 22 on ${{ steps.get-ip.outputs.ip }}..."
+          for i in {1..20}; do 
+            if nc -zv -w 5 ${{ steps.get-ip.outputs.ip }} 22; then
+              echo "TCP Port 22 is open. Sleeping 15s to let SSH service initialize..."
+              sleep 15
+              exit 0
+            fi
+            echo "Attempt $i: Connection refused, retrying in 5s..."
+            sleep 5
           done
           exit 1
+
       - name: Deploy FastAPI via SSH
         uses: appleboy/ssh-action@master
         with:
           host: ${{ steps.get-ip.outputs.ip }}
           username: root
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          # Increased handshake timeout to prevent the i/o timeout error
+          timeout: 90s
           command_timeout: 15m
-          timeout: 60s
           script: |
+            # Ensure Docker is actually ready before running commands
+            until docker info >/dev/null 2>&1; do echo "Waiting for Docker daemon..."; sleep 2; done
             docker login -u _ -p ${{ secrets.DO_ACCESS_TOKEN }} registry.digitalocean.com
             docker stop binitright-python || true
             docker rm binitright-python || true

@@ -197,7 +197,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: OWASP ZAP API Scan
-        uses: zaproxy/action-api-scan@v0.12.0 # Recommended: update to latest
+        uses: zaproxy/action-api-scan@v0.10.0 # Changed from v0.12.0 to v0.10.0
         with:
           # Use the built-in token so the Search API can validate the repo
           token: ${{ secrets.GITHUB_TOKEN }}

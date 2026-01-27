@@ -137,7 +137,8 @@ jobs:
   # ==========================================
   deploy-temp:
     name: Deploy to Temp Droplet
-    if: github.ref != 'refs/heads/master' && (github.event_name == 'pull_request' || github.event.pull_request == null)
+    if: github.event_name == 'pull_request'
+    # if: github.ref != 'refs/heads/master' && (github.event_name == 'pull_request' || github.event.pull_request == null)
     needs: docker-build
     runs-on: ubuntu-latest
     outputs:
@@ -193,7 +194,8 @@ jobs:
   # ==========================================
   dast-scan:
     name: DAST (ZAP Attack)
-    if: github.ref != 'refs/heads/master' && (github.event_name == 'pull_request' || github.event.pull_request == null)
+    if: github.event_name == 'pull_request'
+    # if: github.ref != 'refs/heads/master' && (github.event_name == 'pull_request' || github.event.pull_request == null)
     needs: deploy-temp
     runs-on: ubuntu-latest
     permissions:
@@ -208,7 +210,9 @@ jobs:
           target: "http://${{ needs.deploy-temp.outputs.droplet_ip }}/openapi.json"
           format: openapi
           fail_action: true
-          create_issue: false # Still set to false to avoid cluttering your repo
+          # This replaces 'create_issue' for the API scan action
+          allow_issue_writing: false
+          issue_title: "ZAP Scan Report"
 
       - name: Upload DAST Findings
         if: always()

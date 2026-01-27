@@ -190,6 +190,10 @@ jobs:
   # ==========================================
   dast-scan:
     name: DAST (ZAP Attack)
+    # This block prevents the 403 error by removing Issue access
+    permissions:
+      contents: read
+      issues: none
     if: github.ref != 'refs/heads/master' && (github.event_name == 'pull_request' || github.event.pull_request == null)
     needs: deploy-temp
     runs-on: ubuntu-latest

@@ -2,15 +2,15 @@ name: BinItRight Python Ultimate DO Pipeline
 
 on:
   push:
-    # Now triggers on EVERY branch push
     branches: ["**"]
   pull_request:
     branches: ["master"]
 
-# The concurrency group is key here. By using the 'github.ref',
-# we ensure that pushes to the same branch cancel each other out.
+# This specific group key is the "Fix":
+# It ensures that Push events and PR events on the same branch
+# are recognized as the same "run," and only the latest (PR) survives.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:

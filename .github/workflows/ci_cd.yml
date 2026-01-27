@@ -288,8 +288,3 @@ jobs:
               doctl registry repository delete-tag binitright-app $TAG --force
             fi
           done
-
-      - name: Run Global Garbage Collection
-        # This reclaims space from any untagged layers (orphaned by overwritten tags)
-        # It does NOT touch your Java images as long as they still have tags.
-        run: doctl registry garbage-collection start --include-untagged-manifests --force binitright

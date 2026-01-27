@@ -201,6 +201,7 @@ jobs:
           format: openapi
           fail_action: true
           create_issue: false
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload DAST Findings
         if: always()
@@ -232,7 +233,7 @@ jobs:
   # BOX 8: PRODUCTION DEPLOY
   # ==========================================
   deploy-production:
-    name: 🚀 Production Deploy
+    name: Production Deploy
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     needs: [docker-build]
     runs-on: ubuntu-latest

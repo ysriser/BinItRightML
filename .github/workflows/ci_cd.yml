@@ -200,6 +200,7 @@ jobs:
           target: "http://${{ needs.deploy-temp.outputs.droplet_ip }}/openapi.json"
           format: openapi
           fail_action: true
+          create_issue: false
 
       - name: Upload DAST Findings
         if: always()
@@ -252,3 +253,39 @@ jobs:
               --restart always \
               -p 8000:80 \
               registry.digitalocean.com/binitright/binitright-app:python-latest
+
+  # ==========================================
+  # BOX 9: TARGETED PYTHON CLEANUP
+  # ==========================================
+  registry-maintenance:
+    name: Prune Python Tags & GC
+    needs: [deploy-production, cleanup]
+    if: always() && (needs.deploy-production.result == 'success' || needs.cleanup.result == 'success')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DO_ACCESS_TOKEN }}
+
+      - name: Delete Old Python Tags (Keep 2)
+        run: |
+          # 1. List tags for binitright-app
+          # 2. Filter for ONLY tags starting with 'python-'
+          # 3. Sort by date and skip the 5 newest python tags
+          TAGS_TO_DELETE=$(doctl registry repository list-tags binitright-app --format Tag,UpdatedAt --no-header | \
+            grep "^python-" | \
+            sort -k2 -r | awk 'NR>2 {print $1}')
+
+          for TAG in $TAGS_TO_DELETE; do
+            # SAFETY: Never delete the 'latest' tag or the one currently being deployed
+            if [[ "$TAG" != "python-latest" && "$TAG" != "python-${{ github.sha }}" ]]; then
+              echo "Deleting Python tag: $TAG"
+              doctl registry repository delete-tag binitright-app $TAG --force
+            fi
+          done
+
+      - name: Run Global Garbage Collection
+        # This reclaims space from any untagged layers (orphaned by overwritten tags)
+        # It does NOT touch your Java images as long as they still have tags.
+        run: doctl registry garbage-collection start --include-untagged-manifests --force binitright

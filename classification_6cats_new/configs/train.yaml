@@ -1,0 +1,72 @@
+seed: 42
+device: cuda
+require_cuda: true
+
+paths:
+  train_csv: ml/data/tier1_splits/train.csv
+  val_csv: ml/data/tier1_splits/val.csv
+  test_csv: ml/data/tier1_splits/test.csv
+  output_dir: ml/outputs/classification_6cats_new
+  model_dir: ml/models
+
+labels:
+  - paper
+  - plastic
+  - metal
+  - glass
+  - other_uncertain
+  - e-waste
+  - textile
+
+model:
+  backbone: efficientnet_b0
+  pretrained: true
+  img_size: 224
+
+data:
+  batch_size: 32
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 2
+  verify_images: true
+  skip_bad_images: true
+  max_retry: 5
+
+augment:
+  scale_min: 0.6
+  color_jitter: [0.25, 0.25, 0.25, 0.1]
+  perspective_distortion: 0.4
+  perspective_p: 0.4
+  blur_kernel: 3
+  blur_sigma: [0.1, 2.0]
+  random_erasing_p: 0.25
+
+training:
+  freeze_epochs: 5
+  finetune_epochs: 15
+  grad_clip: 1.0
+  use_amp: true
+  early_stop_patience: 0  # 0 means disabled
+  show_progress: true
+  log_every: 50
+
+optimizer:
+  name: adamw
+  lr_freeze: 0.001
+  lr_finetune: 0.0001
+  weight_decay: 0.01
+  betas: [0.9, 0.999]
+
+scheduler:
+  enabled: true
+  name: cosine
+  min_lr: 0.000001
+
+loss:
+  label_smoothing: 0.1
+
+infer:
+  topk: 3
+  conf_threshold: 0.75
+  margin_threshold: 0.15

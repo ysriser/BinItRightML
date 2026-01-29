@@ -87,7 +87,9 @@ def main() -> None:
 
     warnings: List[str] = []
     manifest_rows: List[Dict[str, str]] = []
-    pools: Dict[str, Dict[str, List[Dict[str, str]]]] = {l: {} for l in final_labels}
+    pools: Dict[str, Dict[str, List[Dict[str, str]]]] = {
+        label: {} for label in final_labels
+    }
     assigned: Dict[str, str] = {}
 
     for label in final_labels:
@@ -146,7 +148,9 @@ def main() -> None:
     if max_total:
         max_total = int(max_total)
         total_target = sum(
-            int(target_counts[s][l]) for s in target_counts for l in target_counts[s]
+            int(target_counts[split_name][label_name])
+            for split_name in target_counts
+            for label_name in target_counts[split_name]
         )
         if total_target > max_total:
             ratio = max_total / total_target

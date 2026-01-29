@@ -1,5 +1,4 @@
 import argparse
-import sys
 from pathlib import Path
 from typing import List
 
@@ -8,13 +7,9 @@ import torch
 from sklearn.metrics import classification_report, confusion_matrix, f1_score
 from tqdm import tqdm
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.append(str(ROOT))
-
-from src.data.adapters import ImageFolderAdapter  # noqa: E402
-from src.models.classifier import build_classifier  # noqa: E402
-from src.utils import ensure_dir, load_checkpoint, load_yaml, resolve_device, save_json  # noqa: E402
+from src.data.adapters import ImageFolderAdapter
+from src.models.classifier import build_classifier
+from src.utils import ensure_dir, load_checkpoint, load_yaml, resolve_device, save_json
 
 
 def parse_args() -> argparse.Namespace:

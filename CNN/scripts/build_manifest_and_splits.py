@@ -31,7 +31,7 @@ def load_yaml(path: Path) -> dict:
 
 
 def stable_int(text: str) -> int:
-    return int(hashlib.md5(text.encode("utf-8")).hexdigest()[:8], 16)
+    return int(hashlib.sha256(text.encode("utf-8")).hexdigest()[:8], 16)
 
 
 def list_images(class_dir: Path) -> List[Path]:

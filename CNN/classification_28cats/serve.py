@@ -1,23 +1,18 @@
 import argparse
 import io
-import sys
 from pathlib import Path
 from typing import Any, Dict, List
 
 import torch
+import uvicorn
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
-import uvicorn
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.append(str(ROOT))
-
-from src.data.transforms import build_transforms  # noqa: E402
-from src.rules import apply_rules  # noqa: E402
-from src.router import Router  # noqa: E402
-from src.utils import load_json, load_yaml  # noqa: E402
+from src.data.transforms import build_transforms
+from src.rules import apply_rules
+from src.router import Router
+from src.utils import load_json, load_yaml
 
 
 def load_artifacts(artifact: Path, labels: Path, device: torch.device):

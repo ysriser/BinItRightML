@@ -2,7 +2,6 @@ from pathlib import Path
 
 import pytest
 import torch
-from PIL import Image
 
 
 def test_exported_model_inference():
@@ -16,8 +15,7 @@ def test_exported_model_inference():
     model = torch.jit.load(model_path, map_location="cpu")
     model.eval()
 
-    # Create a dummy sample image
-    img = Image.new("RGB", (224, 224), color=(128, 128, 128))
+    # Create a dummy sample input
     x = torch.rand(1, 3, 224, 224)
     with torch.no_grad():
         logits = model(x)

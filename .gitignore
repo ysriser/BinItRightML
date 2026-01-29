@@ -12,6 +12,13 @@ coverage.xml
 htmlcov/
 .hypothesis/
 
+# CI / security reports
+reports/
+bandit-results.json
+sca-report.txt
+report_html.html
+report_json.json
+
 .venv/
 venv/
 env/

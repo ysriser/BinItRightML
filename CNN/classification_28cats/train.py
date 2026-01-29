@@ -1,7 +1,6 @@
 import argparse
-import sys
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 import matplotlib.pyplot as plt
 import torch
@@ -10,10 +9,6 @@ from sklearn.metrics import classification_report, confusion_matrix, f1_score
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from tqdm import tqdm
-
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.append(str(ROOT))
 
 from src.data.adapters import ImageFolderAdapter
 from src.data.taco_coco import load_label_map

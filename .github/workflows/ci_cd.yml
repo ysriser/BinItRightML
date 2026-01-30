@@ -265,7 +265,7 @@ jobs:
   # ==========================================
   cleanup:
     name: Cleanup
-    needs: [deploy-temp, dast-scan]
+    needs: [deploy-temp, dast-scan,load-test]
     if: always() && github.ref != 'refs/heads/master' && needs.deploy-temp.outputs.droplet_id != ''
     runs-on: ubuntu-latest
     steps:

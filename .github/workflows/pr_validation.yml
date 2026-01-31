@@ -1,0 +1,98 @@
+name: Python PR Validation (Quality Gates)
+
+on:
+  pull_request:
+    branches: ["master"]
+
+jobs:
+  # ==========================================
+  # BOX 1: LINTING
+  # ==========================================
+  lint:
+    name: Lint (Ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run Ruff
+        run: |
+          pip install ruff
+          # Output to a file for artifact storage
+          ruff check . > lint-report.txt || true
+      - name: Upload Lint Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-lint-reports
+          path: lint-report.txt
+
+  # ==========================================
+  # BOX 2: UNIT TESTS
+  # ==========================================
+  unit-tests:
+    name: Unit Tests (Pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+      - name: Install Dependencies
+        run: |
+          pip install pytest
+          pip install -r requirements.txt
+      - name: Run Pytest
+        run: pytest --junitxml=reports/unit-test.xml || [ $? -eq 5 ]
+      - name: Upload Unit Test Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-unit-reports
+          path: reports/
+
+  # ==========================================
+  # BOX 3: SCA
+  # ==========================================
+  sca-scan:
+    name: SCA (Trivy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Trivy SCA
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: "fs"
+          format: "table"
+          output: "sca-report.txt"
+          exit-code: "1"
+          severity: "CRITICAL,HIGH"
+      - name: Upload SCA Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-sca-results
+          path: sca-report.txt
+
+  # ==========================================
+  # BOX 4: SAST
+  # ==========================================
+  sast-scan:
+    name: SAST (Bandit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Bandit
+        run: |
+          pip install bandit
+          bandit -r . -f json -o bandit-results.json || true
+      - name: Upload SAST Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-sast-results
+          path: bandit-results.json

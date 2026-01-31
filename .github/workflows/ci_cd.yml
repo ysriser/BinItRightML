@@ -224,11 +224,48 @@ jobs:
             report_json.json
 
   # ==========================================
+  # BOX 6.5: PERFORMANCE TEST (Locust)
+  # ==========================================
+  load-test:
+    name: Locust Load Test
+    if: github.event_name == 'pull_request'
+    needs: [deploy-temp, dast-scan]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Locust
+        run: pip install locust
+
+      - name: Run Locust (Headless)
+        run: |
+          # -u: 50 concurrent users, -r: spawn 5 per sec, -t: run for 1 min
+          locust -f locustfile.py \
+            --headless \
+            -u 50 \
+            -r 5 \
+            --run-time 1m \
+            --host http://${{ needs.deploy-temp.outputs.droplet_ip }} \
+            --html report.html
+
+      - name: Upload Load Test Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-load-test-report
+          path: report.html
+
+  # ==========================================
   # BOX 7: CLEANUP
   # ==========================================
   cleanup:
     name: Cleanup
-    needs: [deploy-temp, dast-scan]
+    needs: [deploy-temp, dast-scan,load-test]
     if: always() && github.ref != 'refs/heads/master' && needs.deploy-temp.outputs.droplet_id != ''
     runs-on: ubuntu-latest
     steps:

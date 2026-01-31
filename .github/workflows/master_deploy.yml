@@ -138,7 +138,7 @@ jobs:
         id: vars
         run: |
           # Change this BASE to "v1.1." or "v2.0." when you have a major ML update
-          BASE="py-v1.0."
+          BASE="v1.0."
 
           git fetch --tags
           # Look for tags starting with our Python prefix

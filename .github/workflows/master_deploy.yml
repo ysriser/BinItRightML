@@ -1,0 +1,165 @@
+name: Python Master Deployment
+
+on:
+  push:
+    branches: ["master"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ==========================================
+  # BOX 4 & 5: BUILD & DOCKERIZATION
+  # ==========================================
+  docker-push:
+    name: Docker Build & Push
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Login to DigitalOcean
+        uses: docker/login-action@v3
+        with:
+          registry: registry.digitalocean.com
+          username: _
+          password: ${{ secrets.DO_ACCESS_TOKEN }}
+
+      - name: Build and Push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            registry.digitalocean.com/binitright/python-ml-app:${{ github.sha }}
+            registry.digitalocean.com/binitright/python-ml-app:master
+
+  # ==========================================
+  # BOX 6: DEPLOY TO TEST (PERMANENT SERVER)
+  # ==========================================
+  deploy-test:
+    name: Deploy to Test
+    needs: docker-push
+    runs-on: ubuntu-latest
+    environment: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: SSH Deploy to Test
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.TEST_IP }}
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            export PYTHON_IMAGE=registry.digitalocean.com/binitright/python-ml-app:${{ github.sha }}
+            docker login -u _ -p ${{ secrets.DO_ACCESS_TOKEN }} registry.digitalocean.com
+            docker pull $PYTHON_IMAGE
+            docker stop python-app-test || true
+            docker rm python-app-test || true
+            docker run -d --name python-app-test -p 8001:8000 $PYTHON_IMAGE
+            docker image prune -f
+            sleep 45
+
+  # ==========================================
+  # BOX 7A: DAST SECURITY SCAN (BLOCKS ON MED/HIGH)
+  # ==========================================
+  dast-scan:
+    name: DAST Security Scan
+    needs: deploy-test
+    runs-on: ubuntu-latest
+    # Removed continue-on-error: true. It will now BLOCK if it fails.
+    steps:
+      - name: Wait for App to be Responsive
+        run: |
+          timeout 300s bash -c 'until curl -sSf http://${{ secrets.TEST_IP }}:8001/docs > /dev/null; do echo "Waiting..."; sleep 5; done'
+
+      - name: OWASP ZAP API Scan
+        uses: zaproxy/action-api-scan@v0.10.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          target: "http://${{ secrets.TEST_IP }}:8001/openapi.json"
+          format: openapi
+          fail_action: true # This stays true to enforce security
+          allow_issue_writing: false
+          # Use cmd_options to ignore Info (0) and Low (1) alerts during the scan
+          # -I tells ZAP to ignore warnings for the exit code
+          cmd_options: "-I"
+
+      - name: Upload DAST Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-zap-report
+          path: |
+            report_html.html
+            report_json.json
+
+  # ==========================================
+  # BOX 7B: PERFORMANCE TEST (LOCUST) - RUNS AFTER DAST
+  # ==========================================
+  load-test:
+    name: Locust Load Test
+    needs: dast-scan # Sequential: Starts only after DAST finishes
+    if: always() # Ensures load test runs even if DAST "failed"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run Locust
+        run: |
+          pip install locust
+          locust -f locustfile.py --headless -u 50 -r 5 --run-time 1m --host http://${{ secrets.TEST_IP }}:8001 --html load-report.html
+
+      - name: Upload Load Test Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-load-test-results
+          path: load-report.html
+
+  # ==========================================
+  # BOX 7C: TAG FOR PRODUCTION
+  # ==========================================
+  tag-production:
+    name: Tag Production Image
+    needs: [dast-scan, load-test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Login to DigitalOcean
+        uses: docker/login-action@v3
+        with:
+          registry: registry.digitalocean.com
+          username: _
+          password: ${{ secrets.DO_ACCESS_TOKEN }}
+      - name: Pull, Tag, and Push
+        run: |
+          docker pull registry.digitalocean.com/binitright/python-ml-app:${{ github.sha }}
+          docker tag registry.digitalocean.com/binitright/python-ml-app:${{ github.sha }} \
+                     registry.digitalocean.com/binitright/python-ml-app:production
+          docker push registry.digitalocean.com/binitright/python-ml-app:production
+
+  # ==========================================
+  # BOX 8: PRODUCTION RELEASE
+  # ==========================================
+  deploy-production:
+    name: Production Release
+    needs: tag-production
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: SSH Deploy Production
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.PROD_IP }}
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            docker login -u _ -p ${{ secrets.DO_ACCESS_TOKEN }} registry.digitalocean.com
+            docker pull registry.digitalocean.com/binitright/python-ml-app:production
+            docker stop python-app-prod || true
+            docker rm python-app-prod || true
+            docker run -d --name python-app-prod --restart always -p 8001:8000 registry.digitalocean.com/binitright/python-ml-app:production
+            docker image prune -f

@@ -23,7 +23,6 @@ jobs:
           registry: registry.digitalocean.com
           username: _
           password: ${{ secrets.DO_ACCESS_TOKEN }}
-
       - name: Build and Push
         uses: docker/build-push-action@v5
         with:
@@ -34,7 +33,7 @@ jobs:
             registry.digitalocean.com/binitright/python-ml-app:master
 
   # ==========================================
-  # BOX 6: DEPLOY TO TEST (PERMANENT SERVER)
+  # BOX 6: DEPLOY TO TEST
   # ==========================================
   deploy-test:
     name: Deploy to Test
@@ -55,34 +54,33 @@ jobs:
             docker pull $PYTHON_IMAGE
             docker stop python-app-test || true
             docker rm python-app-test || true
-            docker run -d --name python-app-test -p 8001:8000 $PYTHON_IMAGE
+
+            # Host 8000 -> Container 80 (As per your working production config)
+            docker run -d --name python-app-test -p 8000:80 $PYTHON_IMAGE
+
             docker image prune -f
             sleep 45
 
   # ==========================================
-  # BOX 7A: DAST SECURITY SCAN (BLOCKS ON MED/HIGH)
+  # BOX 7A: DAST SECURITY SCAN (BLOCKING MED/HIGH)
   # ==========================================
   dast-scan:
     name: DAST Security Scan
     needs: deploy-test
     runs-on: ubuntu-latest
-    # Removed continue-on-error: true. It will now BLOCK if it fails.
     steps:
-      - name: Wait for App to be Responsive
-        run: |
-          timeout 300s bash -c 'until curl -sSf http://${{ secrets.TEST_IP }}:8001/docs > /dev/null; do echo "Waiting..."; sleep 5; done'
+      - name: Wait for App
+        run: timeout 300s bash -c 'until curl -sSf http://${{ secrets.TEST_IP }}:8000/docs > /dev/null; do echo "Waiting..."; sleep 5; done'
 
       - name: OWASP ZAP API Scan
         uses: zaproxy/action-api-scan@v0.10.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          target: "http://${{ secrets.TEST_IP }}:8001/openapi.json"
+          target: "http://${{ secrets.TEST_IP }}:8000/openapi.json"
           format: openapi
-          fail_action: true # This stays true to enforce security
+          fail_action: true
           allow_issue_writing: false
-          # Use cmd_options to ignore Info (0) and Low (1) alerts during the scan
-          # -I tells ZAP to ignore warnings for the exit code
-          cmd_options: "-I"
+          cmd_options: "-I" # Only fail on Medium/High risks
 
       - name: Upload DAST Artifacts
         if: always()
@@ -94,12 +92,12 @@ jobs:
             report_json.json
 
   # ==========================================
-  # BOX 7B: PERFORMANCE TEST (LOCUST) - RUNS AFTER DAST
+  # BOX 7B: PERFORMANCE TEST (LOCUST)
   # ==========================================
   load-test:
     name: Locust Load Test
-    needs: dast-scan # Sequential: Starts only after DAST finishes
-    if: always() # Ensures load test runs even if DAST "failed"
+    needs: dast-scan
+    if: always() # Run performance even if DAST only found Low/Info issues
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -107,18 +105,18 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
+      - name: Install Locust
+        run: pip install locust
       - name: Run Locust
         run: |
-          pip install locust
-          locust -f locustfile.py --headless -u 50 -r 5 --run-time 1m --host http://${{ secrets.TEST_IP }}:8001 --html load-report.html
-
-      - name: Upload Load Test Artifacts
+          locust -f locustfile.py --headless -u 50 -r 5 --run-time 1m \
+            --host http://${{ secrets.TEST_IP }}:8000 --html report.html
+      - name: Upload Load Test Report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: python-load-test-results
-          path: load-report.html
+          name: python-load-test-report
+          path: report.html
 
   # ==========================================
   # BOX 7C: TAG FOR PRODUCTION
@@ -142,7 +140,7 @@ jobs:
           docker push registry.digitalocean.com/binitright/python-ml-app:production
 
   # ==========================================
-  # BOX 8: PRODUCTION RELEASE
+  # BOX 8: PRODUCTION RELEASE (PAUSES FOR APPROVAL)
   # ==========================================
   deploy-production:
     name: Production Release
@@ -161,5 +159,8 @@ jobs:
             docker pull registry.digitalocean.com/binitright/python-ml-app:production
             docker stop python-app-prod || true
             docker rm python-app-prod || true
-            docker run -d --name python-app-prod --restart always -p 8001:8000 registry.digitalocean.com/binitright/python-ml-app:production
+
+            # Consistent Host 8000 -> Container 80
+            docker run -d --name python-app-prod --restart always -p 8000:80 registry.digitalocean.com/binitright/python-ml-app:production
+
             docker image prune -f

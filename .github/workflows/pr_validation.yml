@@ -96,3 +96,36 @@ jobs:
         with:
           name: python-sast-results
           path: bandit-results.json
+
+  # ==========================================
+  # BOX 4: PYTHON BUILD (Verification)
+  # ==========================================
+  python-build:
+    name: Python Build Verification
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+      - name: Install Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install wheel setuptools
+          pip install -r requirements.txt
+      - name: Verify Environment (Dry Run)
+        run: |
+          # This ensures the app can at least be 'imported' or 
+          # that the entry point script is valid.
+          python -m compileall .
+      - name: Create Build Archive
+        run: |
+          zip -r python-app-pr.zip . -x "*.git*" "venv/*" "__pycache__/*"
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-app-binary-pr
+          path: python-app-pr.zip
+          retention-days: 1

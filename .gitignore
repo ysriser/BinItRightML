@@ -1,0 +1,50 @@
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.tox/
+.coverage
+coverage.xml
+htmlcov/
+.hypothesis/
+
+# CI / security reports
+reports/
+bandit-results.json
+sca-report.txt
+report_html.html
+report_json.json
+
+.venv/
+venv/
+env/
+.env
+.env.*
+.envrc
+
+build/
+dist/
+*.egg-info/
+
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+
+# Project outputs / data
+CNN/data/
+CNN/outputs/
+CNN/artifacts/
+CNN/runs/
+**/wandb/
+**/mlruns/
+**/lightning_logs/
+
+# Ignore legacy 28cats module
+CNN/classification_28cats/
+

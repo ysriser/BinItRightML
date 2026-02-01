@@ -1,0 +1,25 @@
+name: Registry Maintenance
+
+on:
+    schedule:
+        - cron: "0 3 * * *" # Runs at 3 AM daily
+    workflow_dispatch: # Allows you to run it manually from the "Actions" tab if needed
+
+jobs:
+    maintenance:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Install doctl
+              uses: digitalocean/action-doctl@v2
+              with:
+                  token: ${{ secrets.DO_ACCESS_TOKEN }}
+
+            - name: Prune & GC
+              run: |
+                  # Only run if no active GC is already running
+                  ACTIVE_GC=$(doctl registry garbage-collection get-active --format Status --no-header || echo "none")
+                  if [ "$ACTIVE_GC" != "active" ]; then
+                    doctl registry garbage-collection start --include-untagged-manifests --force
+                  else
+                    echo "Maintenance already in progress."
+                  fi

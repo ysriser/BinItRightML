@@ -67,6 +67,6 @@ def test_resolve_class_root_auto_detect_nested(tmp_path: Path):
     root = tmp_path / "dataset"
     nested = root / "nested"
     _write_image(nested / "glass" / "img.jpg")
-    # Step 2: resolve should return nested folder.
+    # Step 2: resolve should prefer base when a child folder contains images.
     resolved = resolve_class_root({"path": str(root)})
-    assert resolved == nested
+    assert resolved == root

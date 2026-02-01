@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -72,7 +73,22 @@ def load_model() -> Dict[str, Any]:
 
 
 app = FastAPI()
-STATE = load_model()
+STATE: Dict[str, Any] | None = None
+
+
+def get_state() -> Dict[str, Any]:
+    global STATE
+    if STATE is None:
+        if os.environ.get("BINITRIGHT_SKIP_MODEL_LOAD") == "1":
+            raise RuntimeError("Model state not loaded. Set STATE in tests.")
+        STATE = load_model()
+    return STATE
+
+
+@app.on_event("startup")
+def preload_state() -> None:
+    if os.environ.get("BINITRIGHT_SKIP_MODEL_LOAD") != "1":
+        get_state()
 
 
 @app.get("/health")
@@ -82,21 +98,22 @@ def health() -> Dict[str, str]:
 
 @app.post("/api/v1/scan")
 async def scan(image: UploadFile = File(...)) -> Dict[str, Any]:
+    state = get_state()
     image_bytes = await image.read()
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    tensor = STATE["transform"](img).unsqueeze(0).to(STATE["device"])
+    tensor = state["transform"](img).unsqueeze(0).to(state["device"])
 
     with torch.no_grad():
-        logits = STATE["model"](tensor)
+        logits = state["model"](tensor)
         probs = torch.softmax(logits, dim=1).squeeze(0)
 
-    topk = int(STATE["cfg"].get("topk", 3))
-    conf_threshold = float(STATE["cfg"].get("conf_threshold", 0.75))
-    margin_threshold = float(STATE["cfg"].get("margin_threshold", 0.15))
+    topk = int(state["cfg"].get("topk", 3))
+    conf_threshold = float(state["cfg"].get("conf_threshold", 0.75))
+    margin_threshold = float(state["cfg"].get("margin_threshold", 0.15))
 
     top_vals, top_idxs = torch.topk(probs, k=min(topk, probs.numel()))
     top3 = [
-        {"label": STATE["labels"][idx], "p": float(val)}
+        {"label": state["labels"][idx], "p": float(val)}
         for idx, val in zip(top_idxs.tolist(), top_vals.tolist())
     ]
 
@@ -127,5 +144,5 @@ async def scan(image: UploadFile = File(...)) -> Dict[str, Any]:
         "escalate": escalate,
         "instructions": instructions,
         "expert": None,
-        "debug": {"reason": reasons, "model": STATE["cfg"].get("backbone", "unknown")},
+        "debug": {"reason": reasons, "model": state["cfg"].get("backbone", "unknown")},
     }

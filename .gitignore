@@ -44,3 +44,7 @@ CNN/runs/
 **/wandb/
 **/mlruns/
 **/lightning_logs/
+
+# Ignore legacy 28cats module and CI workflows in this repo
+CNN/classification_28cats/
+.github/

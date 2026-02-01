@@ -62,11 +62,38 @@ jobs:
             sleep 45
 
   # ==========================================
-  # BOX 7A: DAST SECURITY SCAN (BLOCKING MED/HIGH)
+  # BOX 7A: PERFORMANCE TEST (LOCUST)
+  # ==========================================
+  load-test:
+    name: Locust Load Test
+    needs: deploy-test
+    if: always() # Run performance even if DAST only found Low/Info issues
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Locust
+        run: pip install locust
+      - name: Run Locust
+        run: |
+          locust -f locustfile.py --headless -u 10 -r 5 --run-time 1m \
+            --host http://${{ secrets.TEST_IP }}:8000 --html report.html
+      - name: Upload Load Test Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-load-test-report
+          path: report.html
+
+  # ==========================================
+  # BOX 7B: DAST SECURITY SCAN (BLOCKING MED/HIGH)
   # ==========================================
   dast-scan:
     name: DAST Security Scan
-    needs: deploy-test
+    needs: load-test
     runs-on: ubuntu-latest
     steps:
       - name: Wait for App
@@ -90,33 +117,6 @@ jobs:
           path: |
             report_html.html
             report_json.json
-
-  # ==========================================
-  # BOX 7B: PERFORMANCE TEST (LOCUST)
-  # ==========================================
-  load-test:
-    name: Locust Load Test
-    needs: dast-scan
-    if: always() # Run performance even if DAST only found Low/Info issues
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - name: Install Locust
-        run: pip install locust
-      - name: Run Locust
-        run: |
-          locust -f locustfile.py --headless -u 10 -r 5 --run-time 1m \
-            --host http://${{ secrets.TEST_IP }}:8000 --html report.html
-      - name: Upload Load Test Report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: python-load-test-report
-          path: report.html
 
   # ==========================================
   # BOX 8: PRODUCTION RELEASE & VERSION TAGGING

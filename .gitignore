@@ -48,3 +48,5 @@ CNN/runs/
 # Ignore legacy 28cats module
 CNN/classification_28cats/
 
+# Machine Learning models and large data
+*.pkl

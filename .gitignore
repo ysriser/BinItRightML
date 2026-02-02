@@ -41,10 +41,10 @@ CNN/data/
 CNN/outputs/
 CNN/artifacts/
 CNN/runs/
+CNN/experiments/**/outputs/
 **/wandb/
 **/mlruns/
 **/lightning_logs/
 
 # Ignore legacy 28cats module
 CNN/classification_28cats/
-

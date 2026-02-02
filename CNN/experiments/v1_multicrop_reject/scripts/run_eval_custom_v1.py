@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import sys
-
 import argparse
 import csv
 import json
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Sequence, Tuple
 
@@ -16,11 +15,15 @@ from PIL import Image
 from sklearn.metrics import confusion_matrix, f1_score
 from tqdm import tqdm
 
-REPO_ROOT = Path(__file__).resolve().parents[4]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
 
-from CNN.shared import decision, multicrop, onnx_infer, preprocess
+def load_shared_modules():
+    repo_root = Path(__file__).resolve().parents[4]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+    from CNN.shared import decision, multicrop, onnx_infer, preprocess
+
+    return decision, multicrop, onnx_infer, preprocess, repo_root
+
 
 IMAGE_EXTS = {
     ".jpg",
@@ -126,6 +129,7 @@ def evaluate_probs(
     true_labels: Sequence[str],
     labels: Sequence[str],
     thresholds: Dict[str, Any],
+    decision_module,
 ) -> Dict[str, Any]:
     label_to_idx = {label: idx for idx, label in enumerate(labels)}
 
@@ -133,7 +137,7 @@ def evaluate_probs(
     escalated: List[bool] = []
 
     for probs, true_label in zip(probs_list, true_labels):
-        result = decision.decide_from_probs(probs, labels, thresholds)
+        result = decision_module.decide_from_probs(probs, labels, thresholds)
         preds.append(result["final_label"])
         escalated.append(bool(result["escalate"]))
 
@@ -191,7 +195,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    repo_root = Path(__file__).resolve().parents[4]
+    decision, multicrop, onnx_infer, preprocess, repo_root = load_shared_modules()
     infer_cfg = load_yaml(resolve_path(str(args.config), repo_root))
     infer_cfg = merge_paths(
         infer_cfg,
@@ -302,8 +306,9 @@ def main() -> None:
         true_labels,
         labels,
         thresholds_baseline,
+        decision,
     )
-    v1_metrics = evaluate_probs(probs_v1, true_labels, labels, thresholds_v1)
+    v1_metrics = evaluate_probs(probs_v1, true_labels, labels, thresholds_v1, decision)
 
     sweep_rows: List[Dict[str, float]] = []
     conf_values = [round(x, 2) for x in np.arange(0.50, 0.951, 0.05)]
@@ -315,7 +320,13 @@ def main() -> None:
             sweep_thresholds = dict(thresholds_v1)
             sweep_thresholds["conf"] = conf_th
             sweep_thresholds["margin"] = margin_th
-            metrics = evaluate_probs(probs_v1, true_labels, labels, sweep_thresholds)
+            metrics = evaluate_probs(
+                probs_v1,
+                true_labels,
+                labels,
+                sweep_thresholds,
+                decision,
+            )
             row = {
                 "conf_threshold": conf_th,
                 "margin_threshold": margin_th,

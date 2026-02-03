@@ -8,11 +8,13 @@ import json
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING
 
 import numpy as np
-import onnxruntime as ort
 from PIL import Image
+
+if TYPE_CHECKING:
+    import onnxruntime as ort
 
 try:
     import pillow_heif
@@ -223,7 +225,14 @@ def hash_array(arr: np.ndarray) -> str:
     return hashlib.sha256(arr.tobytes()).hexdigest()
 
 
-def build_session(model_path: Path, prefer_cuda: bool = True) -> ort.InferenceSession:
+def build_session(model_path: Path, prefer_cuda: bool = True) -> "ort.InferenceSession":
+    try:
+        import onnxruntime as ort
+    except ImportError as exc:
+        raise ImportError(
+            "onnxruntime is required for parity inference. "
+            "Install it or skip parity execution in CI."
+        ) from exc
     if not model_path.exists():
         raise FileNotFoundError(f"Missing model: {model_path}")
     providers = ["CPUExecutionProvider"]
@@ -232,7 +241,7 @@ def build_session(model_path: Path, prefer_cuda: bool = True) -> ort.InferenceSe
     return ort.InferenceSession(str(model_path), providers=providers)
 
 
-def run_onnx(session: ort.InferenceSession, tensor: np.ndarray) -> np.ndarray:
+def run_onnx(session: "ort.InferenceSession", tensor: np.ndarray) -> np.ndarray:
     input_name = session.get_inputs()[0].name
     output_name = session.get_outputs()[0].name
     outputs = session.run([output_name], {input_name: tensor.astype(np.float32)})

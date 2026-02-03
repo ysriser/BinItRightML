@@ -51,7 +51,7 @@ def list_images(data_dir: Path, labels: List[str]) -> List[Tuple[Path, str]]:
 def build_transform(img_size: int, mean: List[float], std: List[float]):
     return transforms.Compose(
         [
-            transforms.Resize(int(img_size * 1.15)),
+            transforms.Resize(int(img_size * 1.10)),
             transforms.CenterCrop(img_size),
             transforms.ToTensor(),
             transforms.Normalize(mean, std),

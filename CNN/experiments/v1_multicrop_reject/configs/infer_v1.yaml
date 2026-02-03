@@ -25,6 +25,6 @@ multicrop:
   extra_crops:
     - zoom_center
     - full_resize
-  resize_scale: 1.15
-  zoom_ratio: 0.85
+  resize_scale: 1.1
+  zoom_ratio: 1
   combine: best_score

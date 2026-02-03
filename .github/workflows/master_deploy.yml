@@ -58,7 +58,7 @@ jobs:
             # Host 8000 -> Container 80 (As per your working production config)
             docker run -d --name python-app-test -p 8000:8000 $PYTHON_IMAGE
             echo "Waiting for container to pass internal health check..."
-            timeout 120s bash -c 'until curl -s http://localhost:80/docs > /dev/null; do sleep 5; done'
+            timeout 120s bash -c 'until curl -s http://localhost:8000/docs > /dev/null; do sleep 5; done'
 
             docker image prune -f
             sleep 45

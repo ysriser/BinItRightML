@@ -3,9 +3,9 @@ device: cuda
 require_cuda: true
 
 paths:
-  train_csv: CNN/data/tier1_splits/train.csv
-  val_csv: CNN/data/tier1_splits/val.csv
-  test_csv: CNN/data/tier1_splits/test.csv
+  train_csv: CNN/data/tier1_splits/latest/train.csv
+  val_csv: CNN/data/tier1_splits/latest/val.csv
+  test_csv: CNN/data/tier1_splits/latest/test.csv
   output_dir: CNN/outputs/clf_7cats_tier1
   model_dir: CNN/models
 

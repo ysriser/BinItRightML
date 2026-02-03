@@ -2,6 +2,7 @@
 Build manifest and train/val/test splits from mixed raw datasets.
 Usage:
   python CNN/data/scripts/build_manifest_and_splits.py --config CNN/data/configs/dataset_mix.yaml
+  python CNN/data/scripts/build_manifest_and_splits.py --run-name 20260203_a
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ import os
 import random
 import shutil
 from pathlib import Path
+from datetime import datetime
 from typing import Dict, List, Tuple
 
 import yaml
@@ -45,24 +47,30 @@ def candidate_class_dirs(root: Path) -> List[Path]:
     return [d for d in root.iterdir() if d.is_dir() and has_images(d)]
 
 
-def resolve_class_root(source_cfg: dict) -> Path:
+def resolve_class_roots(source_cfg: dict) -> Tuple[Path, List[Path]]:
     base = Path(source_cfg.get("path", ""))
     if not base.exists():
         raise FileNotFoundError(f"Source path not found: {base}")
     class_root = source_cfg.get("class_root")
+    fallback_roots = source_cfg.get("fallback_roots") or []
     if class_root:
         root = base / class_root
         if not root.exists():
             raise FileNotFoundError(f"class_root not found: {root}")
-        return root
+        fallbacks = []
+        for fallback in fallback_roots:
+            fallback_path = base / str(fallback)
+            if fallback_path.exists():
+                fallbacks.append(fallback_path)
+        return root, fallbacks
 
     if candidate_class_dirs(base):
-        return base
+        return base, []
 
     subdirs = [d for d in base.iterdir() if d.is_dir() and not d.name.startswith(".")]
     candidates = [d for d in subdirs if candidate_class_dirs(d)]
     if len(candidates) == 1:
-        return candidates[0]
+        return candidates[0], []
     raise ValueError(
         f"Cannot auto-detect class_root under {base}. Set class_root in config."
     )
@@ -100,9 +108,10 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=Path("CNN/data/configs/dataset_mix.yaml"),
     )
-    p.add_argument("--manifest", type=Path, default=Path("CNN/data/tier1_manifest.csv"))
     p.add_argument("--splits-dir", type=Path, default=Path("CNN/data/tier1_splits"))
-    p.add_argument("--stats", type=Path, default=Path("CNN/data/tier1_stats.json"))
+    p.add_argument("--run-name", type=str, default=None)
+    p.add_argument("--manifest", type=Path, default=None)
+    p.add_argument("--stats", type=Path, default=None)
     return p.parse_args()
 
 
@@ -125,14 +134,19 @@ def main() -> None:
 
     warnings: List[str] = []
     manifest_rows: List[Dict[str, str]] = []
-    pools: Dict[str, Dict[str, List[Dict[str, str]]]] = {
+    pools: Dict[str, Dict[str, List[Dict[str, str]]]] = {label: {} for label in final_labels}
+    fallback_pools: Dict[str, Dict[str, List[Dict[str, str]]]] = {
         label: {} for label in final_labels
     }
     assigned: Dict[str, str] = {}
 
-    class_roots: Dict[str, Path] = {}
+    class_roots: Dict[str, Dict[str, List[Path]]] = {}
     for name, meta in sources.items():
-        class_roots[name] = resolve_class_root(meta)
+        primary_root, fallback_roots = resolve_class_roots(meta)
+        class_roots[name] = {
+            "primary": [primary_root],
+            "fallback": fallback_roots,
+        }
 
     for label in final_labels:
         mixes = label_mix.get(label, [])
@@ -146,7 +160,7 @@ def main() -> None:
             if not orig_classes:
                 raise ValueError(f"orig_classes is empty for label '{label}' and source '{source_name}'.")
 
-            source_root = class_roots[source_name]
+            source_root = class_roots[source_name]["primary"][0]
             pools[label].setdefault(source_name, [])
             for orig in orig_classes:
                 class_dir = source_root / orig
@@ -171,6 +185,34 @@ def main() -> None:
                     }
                     pools[label][source_name].append(sample)
                     manifest_rows.append(sample)
+
+            fallback_roots = class_roots[source_name]["fallback"]
+            if fallback_roots:
+                fallback_pools[label].setdefault(source_name, [])
+                for fallback_root in fallback_roots:
+                    for orig in orig_classes:
+                        class_dir = fallback_root / orig
+                        if not class_dir.exists():
+                            warnings.append(f"Missing class dir: {class_dir}")
+                            continue
+                        for img_path in list_images(class_dir):
+                            rel_path = None
+                            try:
+                                rel_path = img_path.resolve().relative_to(root).as_posix()
+                            except ValueError:
+                                rel_path = str(img_path.resolve())
+                            if rel_path in assigned and assigned[rel_path] != label:
+                                warnings.append(f"File used in multiple labels: {rel_path}")
+                                continue
+                            assigned[rel_path] = label
+                            sample = {
+                                "filepath": rel_path,
+                                "source": source_name,
+                                "orig_class": orig,
+                                "final_label": label,
+                            }
+                            fallback_pools[label][source_name].append(sample)
+                            manifest_rows.append(sample)
 
     # Apply optional caps per source per label (deterministic).
     for label, sources_map in pools.items():
@@ -206,18 +248,30 @@ def main() -> None:
         for source_name, items in sources_map.items():
             rng = random.Random(seed + stable_int(f"{label}-{source_name}"))
             rng.shuffle(items)
+        for source_name, items in fallback_pools.get(label, {}).items():
+            rng = random.Random(seed + stable_int(f"{label}-{source_name}-fallback"))
+            rng.shuffle(items)
 
     # Prepare index pointers for each pool.
     indices: Dict[Tuple[str, str], int] = {}
+    fallback_indices: Dict[Tuple[str, str], int] = {}
     for label, sources_map in pools.items():
         for source_name in sources_map:
             indices[(label, source_name)] = 0
+            fallback_indices[(label, source_name)] = 0
 
     def take(label: str, source_name: str, n: int) -> List[Dict[str, str]]:
         pool = pools[label][source_name]
         idx = indices[(label, source_name)]
         picked = pool[idx : idx + n]
         indices[(label, source_name)] = idx + len(picked)
+        remaining = n - len(picked)
+        if remaining > 0:
+            fb_pool = fallback_pools.get(label, {}).get(source_name, [])
+            fb_idx = fallback_indices.get((label, source_name), 0)
+            fb_picked = fb_pool[fb_idx : fb_idx + remaining]
+            fallback_indices[(label, source_name)] = fb_idx + len(fb_picked)
+            picked.extend(fb_picked)
         return picked
 
     splits = ["train", "val", "test"]
@@ -266,16 +320,21 @@ def main() -> None:
         rng.shuffle(split_rows[split])
 
     # Write manifest.
-    args.manifest.parent.mkdir(parents=True, exist_ok=True)
-    with args.manifest.open("w", encoding="utf-8", newline="") as f:
+    run_name = args.run_name or datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    run_dir = args.splits_dir / run_name
+    run_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = args.manifest or (run_dir / "manifest.csv")
+    stats_path = args.stats or (run_dir / "stats.json")
+
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    with manifest_path.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=["filepath", "source", "orig_class", "final_label"])
         writer.writeheader()
         writer.writerows(manifest_rows)
 
     # Write splits.
-    args.splits_dir.mkdir(parents=True, exist_ok=True)
     for split in splits:
-        out_path = args.splits_dir / f"{split}.csv"
+        out_path = run_dir / f"{split}.csv"
         with out_path.open("w", encoding="utf-8", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=["filepath", "source", "orig_class", "final_label"])
             writer.writeheader()
@@ -317,18 +376,27 @@ def main() -> None:
         "actual_counts": split_stats,
         "shortages": shortages,
         "warnings": warnings,
-        "class_roots": {k: str(v) for k, v in class_roots.items()},
+        "class_roots": {
+            k: {"primary": [str(p) for p in v["primary"]], "fallback": [str(p) for p in v["fallback"]]}
+            for k, v in class_roots.items()
+        },
     }
 
-    args.stats.parent.mkdir(parents=True, exist_ok=True)
-    with args.stats.open("w", encoding="utf-8") as f:
+    stats_path.parent.mkdir(parents=True, exist_ok=True)
+    with stats_path.open("w", encoding="utf-8") as f:
         json.dump(stats, f, indent=2, ensure_ascii=False)
 
-    print(f"Manifest: {args.manifest}")
-    print(f"Splits: {args.splits_dir}")
-    print(f"Stats: {args.stats}")
+    latest_dir = args.splits_dir / "latest"
+    latest_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(manifest_path, latest_dir / "manifest.csv")
+    shutil.copy2(stats_path, latest_dir / "stats.json")
+    for split in splits:
+        shutil.copy2(run_dir / f"{split}.csv", latest_dir / f"{split}.csv")
+
+    print(f"Run: {run_dir}")
+    print(f"Latest: {latest_dir}")
     if warnings:
-        print(f"Warnings: {len(warnings)} (see tier1_stats.json)")
+        print(f"Warnings: {len(warnings)} (see stats.json in run folder)")
 
 
 if __name__ == "__main__":

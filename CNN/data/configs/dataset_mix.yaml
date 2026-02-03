@@ -50,6 +50,10 @@ sources:
   trashnet:
     path: CNN/data/trashnet
     class_root: dataset-resized
+  taco28:
+    path: CNN/data/taco_super28_cls_combined
+    class_root: train
+    fallback_roots: [val, test]
 
 label_mix:
   paper:
@@ -101,17 +105,38 @@ label_mix:
       weight: 0.15
   textile:
     - source: kaggle12
-      orig_classes: ["clothes", "shoes"]
-      weight: 1.00
+      orig_classes: ["clothes"]
+      weight: 0.70
+    - source: kaggle12
+      orig_classes: ["shoes"]
+      weight: 0.30
   other_uncertain:
     - source: kaggle12
-      orig_classes: ["biological", "trash"]
-      weight: 0.50
+      orig_classes: ["biological"]
+      weight: 0.14
+    - source: kaggle12
+      orig_classes: ["trash"]
+      weight: 0.06
     - source: trashbox
       orig_classes: ["medical"]
-      weight: 0.30
+      weight: 0.10
     - source: trashnet
       orig_classes: ["trash"]
-      weight: 0.20
+      weight: 0.10
+    - source: taco28
+      orig_classes:
+        [
+          "Blister pack",
+          "Bottle cap",
+          "Cigarette",
+          "Food waste",
+          "Lid",
+          "Other plastic",
+          "Rope & strings",
+          "Squeezable tube",
+          "Styrofoam piece",
+          "Unlabeled litter",
+        ]
+      weight: 0.60
 
 caps: {}

@@ -9,7 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 import yaml
 
@@ -35,24 +35,30 @@ def candidate_class_dirs(root: Path) -> List[Path]:
     return [d for d in root.iterdir() if d.is_dir() and has_images(d)]
 
 
-def resolve_class_root(source_cfg: dict) -> Path:
+def resolve_class_roots(source_cfg: dict) -> Tuple[Path, List[Path]]:
     base = Path(source_cfg.get("path", ""))
     if not base.exists():
         raise FileNotFoundError(f"Source path not found: {base}")
     class_root = source_cfg.get("class_root")
+    fallback_roots = source_cfg.get("fallback_roots") or []
     if class_root:
         root = base / class_root
         if not root.exists():
             raise FileNotFoundError(f"class_root not found: {root}")
-        return root
+        fallbacks = []
+        for fallback in fallback_roots:
+            fallback_path = base / str(fallback)
+            if fallback_path.exists():
+                fallbacks.append(fallback_path)
+        return root, fallbacks
 
     if candidate_class_dirs(base):
-        return base
+        return base, []
 
     subdirs = [d for d in base.iterdir() if d.is_dir() and not d.name.startswith(".")]
     candidates = [d for d in subdirs if candidate_class_dirs(d)]
     if len(candidates) == 1:
-        return candidates[0]
+        return candidates[0], []
     raise ValueError(
         f"Cannot auto-detect class_root under {base}. Set class_root in config."
     )
@@ -94,13 +100,20 @@ def main() -> None:
     report = {"sources": {}, "total_images": 0}
 
     for name, meta in sources.items():
-        class_root = resolve_class_root(meta)
+        class_root, fallback_roots = resolve_class_roots(meta)
         counts = scan_source(class_root)
         total = sum(counts.values())
+        root_stats = {str(class_root): counts}
+        for fallback in fallback_roots:
+            fb_counts = scan_source(fallback)
+            root_stats[str(fallback)] = fb_counts
+            total += sum(fb_counts.values())
         report["sources"][name] = {
             "path": str(Path(meta.get("path", ""))),
             "class_root": str(class_root),
+            "fallback_roots": [str(p) for p in fallback_roots],
             "classes": counts,
+            "roots": root_stats,
             "total_images": total,
         }
         report["total_images"] += total

@@ -62,8 +62,8 @@ jobs:
             timeout 120s bash -c 'until curl -s http://localhost:8000/docs > /dev/null; do sleep 5; done'
 
             docker image prune -f
+            docker image prune -a -f --filter "until=1h"
             sleep 45
-
 
   # ==========================================
   # BOX 7A: PERFORMANCE TEST (LOCUST)
@@ -121,7 +121,6 @@ jobs:
           path: |
             report_html.html
             report_json.json
-        
 
   # ==========================================
   # BOX 8: PRODUCTION RELEASE & VERSION TAGGING
@@ -200,6 +199,7 @@ jobs:
               registry.digitalocean.com/binitright/python-ml-app:${{ env.NEW_TAG }}
 
             docker image prune -f
+            docker image prune -a -f --filter "until=1h"
 
       # 4. GIT TAGGING (The Final Seal)
       - name: Push Git Tag

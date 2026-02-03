@@ -15,6 +15,7 @@ separated to avoid config drift.
 - Training: `CNN/clf_7cats_tier1/`
 - V1 inference logic: `CNN/experiments/v1_multicrop_reject/`
 - Parity self-test: `CNN/experiments/v1_parity_self_test/`
+- Robust fine-tune: `CNN/experiments/v1_robust_finetune/`
 
 ## Parity self-test (quick check)
 ```

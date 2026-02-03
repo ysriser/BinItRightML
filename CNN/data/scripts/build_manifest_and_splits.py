@@ -1,7 +1,7 @@
 """
 Build manifest and train/val/test splits from mixed raw datasets.
 Usage:
-  python CNN/clf_7cats_tier1/scripts/build_manifest_and_splits.py --config CNN/clf_7cats_tier1/configs/dataset_mix.yaml
+  python CNN/data/scripts/build_manifest_and_splits.py --config CNN/data/configs/dataset_mix.yaml
 """
 
 from __future__ import annotations
@@ -98,7 +98,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--config",
         type=Path,
-        default=Path("CNN/clf_7cats_tier1/configs/dataset_mix.yaml"),
+        default=Path("CNN/data/configs/dataset_mix.yaml"),
     )
     p.add_argument("--manifest", type=Path, default=Path("CNN/data/tier1_manifest.csv"))
     p.add_argument("--splits-dir", type=Path, default=Path("CNN/data/tier1_splits"))

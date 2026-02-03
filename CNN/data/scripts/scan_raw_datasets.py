@@ -1,7 +1,7 @@
 """
 Scan raw dataset folders and write per-source class counts.
 Usage:
-  python CNN/clf_7cats_tier1/scripts/scan_raw_datasets.py --config CNN/clf_7cats_tier1/configs/dataset_mix.yaml
+  python CNN/data/scripts/scan_raw_datasets.py --config CNN/data/configs/dataset_mix.yaml
 """
 
 from __future__ import annotations
@@ -78,7 +78,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--config",
         type=Path,
-        default=Path("CNN/clf_7cats_tier1/configs/dataset_mix.yaml"),
+        default=Path("CNN/data/configs/dataset_mix.yaml"),
     )
     p.add_argument("--out", type=Path, default=Path("CNN/data/raw_stats.json"))
     return p.parse_args()

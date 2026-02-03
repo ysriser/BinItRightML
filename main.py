@@ -14,27 +14,40 @@ def read_root():
 def read_item(item_id: int, q: Union[str, None] = None):
     return {"item_id": item_id, "q": q}
 
-with open("forecasts1.pkl", "rb") as f:
-    BEST_FORECASTS = pickle.load(f)
+BEST_FORECASTS = None
+
+@app.on_event("startup")
+def load_forecasts():
+    global BEST_FORECASTS
+    try:
+        with open("forecasts1.pkl", "rb") as f:
+            BEST_FORECASTS = pickle.load(f)
+        print("Forecasts loaded successfully")
+    except Exception as e:
+        print(f"Forecast file not loaded: {e}")
+        BEST_FORECASTS = {}
+
 
 @app.get("/forecast")
 def get_final_forecast():
+    if not BEST_FORECASTS:
+        return {"error": "Forecast data not available"}
 
     years = list(range(2025, 2031))
-
     response = {
         "forecasts": {},
         "calculated_total_generated_tonnes": round(
-            BEST_FORECASTS["Total_tonnes"], 2
+            BEST_FORECASTS.get("Total_tonnes", 0), 2
         )
     }
 
-    for model_name in ["ARIMA", "WMA", "SES"]:
-        response["forecasts"][model_name] = dict(
-            zip(years, map(int, BEST_FORECASTS[model_name]))
+    for model in ["ARIMA", "WMA", "SES"]:
+        response["forecasts"][model] = dict(
+            zip(years, map(int, BEST_FORECASTS.get(model, [])))
         )
 
     return response
+
 
 
 @app.middleware("http")

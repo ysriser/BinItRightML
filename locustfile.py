@@ -1,15 +1,16 @@
 from locust import HttpUser, task, between
 
 class BinItRightUser(HttpUser):
-    # Users wait between 1 and 3 seconds between tasks
+    # Simulates users waiting between 1 and 3 seconds between requests
     wait_time = between(1, 3)
 
-    @task
-    def load_openapi(self):
-        """Simulates users fetching the API schema."""
-        self.client.get("/openapi.json")
+    @task(5)
+    def get_forecast(self):
+        """Simulates users hitting the ML forecast endpoint."""
+        # This targets the actual logic that loads your pkl file
+        self.client.get("/forecast")
 
-    @task(3)
-    def root_endpoint(self):
-        """Simulates users hitting the main entry point."""
-        self.client.get("/")
+    @task(1)
+    def load_openapi(self):
+        """Simulates developers/tools fetching the API schema."""
+        self.client.get("/openapi.json")

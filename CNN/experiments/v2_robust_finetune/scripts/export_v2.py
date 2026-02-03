@@ -112,12 +112,6 @@ def main() -> None:
     cfg = load_yaml(args.config)
 
     paths = cfg.get("paths", {})
-    artifact_root = Path(
-        paths.get(
-            "artifact_dir",
-            "CNN/experiments/v2_robust_finetune/artifacts",
-        )
-    )
     output_root = Path(
         paths.get(
             "output_dir",

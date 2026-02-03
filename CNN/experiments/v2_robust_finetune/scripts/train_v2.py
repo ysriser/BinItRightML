@@ -672,7 +672,7 @@ def main() -> None:
         raise FileNotFoundError(f"Missing domain data dir: {g3_data_dir}")
     domain_items = build_domain_items(g3_data_dir, label_to_idx)
     if not domain_items:
-        raise ValueError("No domain images found in G3_SGData")
+        raise ValueError("No domain images found in hardset")
     domain_split = split_items(
         domain_items,
         float(phase_b.get("val_ratio", 0.2)),
@@ -848,10 +848,10 @@ def main() -> None:
         if scheduler:
             scheduler.step()
 
-        val_metrics = evaluate(model, val_loader, device, labels)
+        val_metrics, _, _ = evaluate(model, val_loader, device, labels)
         source_metrics = val_metrics
         if use_domain_val:
-            source_metrics = evaluate(model, domain_val_loader, device, labels)
+            source_metrics, _, _ = evaluate(model, domain_val_loader, device, labels)
 
         if source_metrics["macro_f1"] > best_f1:
             best_state = model.state_dict()
@@ -883,7 +883,7 @@ def main() -> None:
         if scheduler:
             scheduler.step()
 
-        source_metrics = evaluate(
+        source_metrics, _, _ = evaluate(
             model,
             domain_val_loader if use_domain_val else val_loader,
             device,

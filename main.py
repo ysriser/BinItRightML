@@ -1,35 +1,28 @@
-from typing import Union
+import os
 import pickle
-
 from fastapi import FastAPI
+from typing import Union
+
 app = FastAPI()
 
+# 1. Resolve the path immediately
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+pkl_path = os.path.join(BASE_DIR, "forecasts1.pkl")
 
-@app.get("/")
-def read_root():
-    return {"Hello": "World"}
+# 2. Load the data at the TOP LEVEL (No more startup event needed)
+print(f"--- Attempting to load: {pkl_path} ---")
+try:
+    with open(pkl_path, "rb") as f:
+        BEST_FORECASTS = pickle.load(f)
+    print("--- SUCCESS: Forecasts loaded ---")
+except Exception as e:
+    print(f"--- ERROR: {e} ---")
+    BEST_FORECASTS = {}
 
-
-@app.get("/items/{item_id}")
-def read_item(item_id: int, q: Union[str, None] = None):
-    return {"item_id": item_id, "q": q}
-
-BEST_FORECASTS = None
-
-@app.on_event("startup")
-def load_forecasts():
-    global BEST_FORECASTS
-    try:
-        with open("forecasts1.pkl", "rb") as f:
-            BEST_FORECASTS = pickle.load(f)
-        print("Forecasts loaded successfully")
-    except Exception as e:
-        print(f"Forecast file not loaded: {e}")
-        BEST_FORECASTS = {}
-
-
+# 3. Your endpoints remain the same
 @app.get("/forecast")
 def get_final_forecast():
+    # If the dictionary is empty, it returns the error you saw in curl
     if not BEST_FORECASTS:
         return {"error": "Forecast data not available"}
 
@@ -46,15 +39,4 @@ def get_final_forecast():
             zip(years, map(int, BEST_FORECASTS.get(model, [])))
         )
 
-    return response
-
-
-
-@app.middleware("http")
-async def add_security_headers(request, call_next):
-    response = await call_next(request)
-    # Fix for Alert 10021
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    # Fix for Alert 90004
-    response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
     return response

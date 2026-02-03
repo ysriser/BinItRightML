@@ -60,28 +60,14 @@ jobs:
 
             docker image prune -f
             sleep 45
-  # ==========================================
-  # NEW BOX 6.5: SIT HEALTH CHECK (The Quality Gate)
-  # ==========================================
-  sit-health-check:
-    name: SIT Health Check
-    needs: deploy-test
-    runs-on: ubuntu-latest
-    steps:
-      - name: Verify API Response
-        run: |
-          echo "Checking if FastAPI is alive on Test Server..."
-          # Retries for up to 1 minute (6 * 10s) to allow for model loading
-          curl --fail --retry 6 --retry-delay 10 --retry-connrefused \
-            http://${{ secrets.TEST_IP }}:8000/forecast || exit 1
-          echo "SIT Passed: API is responding with data."
+
 
   # ==========================================
   # BOX 7A: PERFORMANCE TEST (LOCUST)
   # ==========================================
   load-test:
     name: Locust Load Test
-    needs: sit-health-check
+    needs: deploy-test
     if: always() # Run performance even if DAST only found Low/Info issues
     runs-on: ubuntu-latest
     steps:

@@ -51,6 +51,7 @@ jobs:
           script: |
             export PYTHON_IMAGE=registry.digitalocean.com/binitright/python-ml-app:${{ github.sha }}
             docker login -u _ -p ${{ secrets.DO_ACCESS_TOKEN }} registry.digitalocean.com
+            docker image prune -f
             docker pull $PYTHON_IMAGE
             docker stop python-app-test || true
             docker rm python-app-test || true
@@ -183,6 +184,7 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             docker login -u _ -p ${{ secrets.DO_ACCESS_TOKEN }} registry.digitalocean.com
+            docker image prune -f
 
             # Pull the specific new version
             docker pull registry.digitalocean.com/binitright/python-ml-app:${{ env.NEW_TAG }}

@@ -1,7 +1,7 @@
 """
 Run inference on a custom folder test set and export visual results.
 Usage:
-  python ml/classification_6cats_new/eval_custom.py --data-dir <path_to_testset>
+  python CNN/clf_7cats_tier1/eval_custom.py --data-dir <path_to_testset>
 """
 
 from __future__ import annotations
@@ -77,8 +77,8 @@ def draw_overlay(img: Image.Image, text_lines: List[str]) -> Image.Image:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Evaluate a custom test folder.")
-    p.add_argument("--data-dir", type=Path, default=Path("ml/data/G3_SGData"))
-    p.add_argument("--model-dir", type=Path, default=Path("ml/models"))
+    p.add_argument("--data-dir", type=Path, default=Path("CNN/data/G3_SGData"))
+    p.add_argument("--model-dir", type=Path, default=Path("CNN/models"))
     p.add_argument("--output-dir", type=Path, default=None)
     p.add_argument("--topk", type=int, default=3)
     p.add_argument("--max-images", type=int, default=0, help="0 = no limit")
@@ -118,7 +118,7 @@ def main() -> None:
         raise ValueError("No images found. Check data-dir and label folders.")
 
     run_name = datetime.now().strftime("custom_eval_%Y%m%d_%H%M%S")
-    output_dir = args.output_dir or Path("ml/outputs/classification_6cats_new") / run_name
+    output_dir = args.output_dir or Path("CNN/outputs/clf_7cats_tier1") / run_name
     output_dir.mkdir(parents=True, exist_ok=True)
     vis_dir = output_dir / "vis"
     if args.save_images:

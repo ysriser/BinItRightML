@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from CNN.classification_6cats_new.scripts.build_manifest_and_splits import (
+from CNN.clf_7cats_tier1.scripts.build_manifest_and_splits import (
     allocate_by_weights,
     resolve_class_root,
     stable_int,

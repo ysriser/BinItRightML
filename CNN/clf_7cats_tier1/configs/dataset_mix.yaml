@@ -1,7 +1,7 @@
 seed: 42
 make_links: false
 links:
-  out_dir: ml/data/merged_tier1
+  out_dir: CNN/data/merged_tier1
   method: auto  # auto | symlink | hardlink | copy
 
 max_total_images: null
@@ -43,12 +43,12 @@ target_counts:
 
 sources:
   trashbox:
-    path: ml/data/trashbox
+    path: CNN/data/trashbox
     class_root: TrashBox_train_set
   kaggle12:
-    path: ml/data/garbage
+    path: CNN/data/garbage
   trashnet:
-    path: ml/data/trashnet
+    path: CNN/data/trashnet
     class_root: dataset-resized
 
 label_mix:

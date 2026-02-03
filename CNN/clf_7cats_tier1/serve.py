@@ -1,7 +1,7 @@
 """
 FastAPI inference for Tier-1 model.
 Run:
-  uvicorn ml.classification_6cats_new.serve:app --host 0.0.0.0 --port 8000
+  uvicorn ml.clf_7cats_tier1.serve:app --host 0.0.0.0 --port 8000
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from fastapi import FastAPI, File, UploadFile
 from PIL import Image
 from torchvision import transforms
 
-MODEL_DIR = Path("ml/models")
+MODEL_DIR = Path("CNN/models")
 
 RULES = {
     "paper": ["Empty and dry before recycling.", "Remove food residue."],

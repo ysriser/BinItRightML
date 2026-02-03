@@ -1,7 +1,7 @@
 """
 Train Tier-1 classifier from split CSVs (config-driven).
 Usage:
-  python ml/classification_6cats_new/train.py
+  python CNN/clf_7cats_tier1/train.py
 """
 
 from __future__ import annotations
@@ -266,7 +266,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--config",
         type=Path,
-        default=Path("ml/classification_6cats_new/configs/train.yaml"),
+        default=Path("CNN/clf_7cats_tier1/configs/train.yaml"),
     )
     return p.parse_args()
 
@@ -295,11 +295,11 @@ def main() -> None:
         device = torch.device(device_str)
 
     paths = cfg.get("paths", {})
-    train_csv = Path(paths.get("train_csv", "ml/data/tier1_splits/train.csv"))
-    val_csv = Path(paths.get("val_csv", "ml/data/tier1_splits/val.csv"))
-    test_csv = Path(paths.get("test_csv", "ml/data/tier1_splits/test.csv"))
-    output_dir = Path(paths.get("output_dir", "ml/outputs/classification_6cats_new"))
-    model_dir = Path(paths.get("model_dir", "ml/models"))
+    train_csv = Path(paths.get("train_csv", "CNN/data/tier1_splits/train.csv"))
+    val_csv = Path(paths.get("val_csv", "CNN/data/tier1_splits/val.csv"))
+    test_csv = Path(paths.get("test_csv", "CNN/data/tier1_splits/test.csv"))
+    output_dir = Path(paths.get("output_dir", "CNN/outputs/clf_7cats_tier1"))
+    model_dir = Path(paths.get("model_dir", "CNN/models"))
 
     model_cfg = cfg.get("model", {})
     backbone = model_cfg.get("backbone", "efficientnet_b0")

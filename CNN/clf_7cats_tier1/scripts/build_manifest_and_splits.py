@@ -1,7 +1,7 @@
 """
 Build manifest and train/val/test splits from mixed raw datasets.
 Usage:
-  python ml/classification_6cats_new/scripts/build_manifest_and_splits.py --config ml/classification_6cats_new/configs/dataset_mix.yaml
+  python CNN/clf_7cats_tier1/scripts/build_manifest_and_splits.py --config CNN/clf_7cats_tier1/configs/dataset_mix.yaml
 """
 
 from __future__ import annotations
@@ -98,11 +98,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--config",
         type=Path,
-        default=Path("ml/classification_6cats_new/configs/dataset_mix.yaml"),
+        default=Path("CNN/clf_7cats_tier1/configs/dataset_mix.yaml"),
     )
-    p.add_argument("--manifest", type=Path, default=Path("ml/data/tier1_manifest.csv"))
-    p.add_argument("--splits-dir", type=Path, default=Path("ml/data/tier1_splits"))
-    p.add_argument("--stats", type=Path, default=Path("ml/data/tier1_stats.json"))
+    p.add_argument("--manifest", type=Path, default=Path("CNN/data/tier1_manifest.csv"))
+    p.add_argument("--splits-dir", type=Path, default=Path("CNN/data/tier1_splits"))
+    p.add_argument("--stats", type=Path, default=Path("CNN/data/tier1_stats.json"))
     return p.parse_args()
 
 
@@ -285,7 +285,7 @@ def main() -> None:
     if cfg.get("make_links", False):
         links_cfg = cfg.get("links", {})
         method = links_cfg.get("method", "auto")
-        out_dir = Path(links_cfg.get("out_dir", "ml/data/merged_tier1"))
+        out_dir = Path(links_cfg.get("out_dir", "CNN/data/merged_tier1"))
         for split in splits:
             for item in split_rows[split]:
                 label = item["final_label"]

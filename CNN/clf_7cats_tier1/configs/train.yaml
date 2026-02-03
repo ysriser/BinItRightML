@@ -3,11 +3,11 @@ device: cuda
 require_cuda: true
 
 paths:
-  train_csv: ml/data/tier1_splits/train.csv
-  val_csv: ml/data/tier1_splits/val.csv
-  test_csv: ml/data/tier1_splits/test.csv
-  output_dir: ml/outputs/classification_6cats_new
-  model_dir: ml/models
+  train_csv: CNN/data/tier1_splits/train.csv
+  val_csv: CNN/data/tier1_splits/val.csv
+  test_csv: CNN/data/tier1_splits/test.csv
+  output_dir: CNN/outputs/clf_7cats_tier1
+  model_dir: CNN/models
 
 labels:
   - paper

@@ -21,11 +21,11 @@ only accept confident predictions.
 
 ## Important: Training is Unchanged
 V1 is **inference-only**. Training stays in:
-`CNN/classification_6cats_new/`
+`CNN/clf_7cats_tier1/`
 
 Train command:
 ```
-python CNN/classification_6cats_new/train.py --config CNN/classification_6cats_new/configs/train.yaml
+python CNN/clf_7cats_tier1/train.py --config CNN/clf_7cats_tier1/configs/train.yaml
 ```
 
 After training, make sure these files exist (or update paths.yaml):
@@ -43,8 +43,8 @@ Open:
 ### Step 1: (Optional) Train a new model
 If you already have a working ONNX model, you can skip this.
 ```
-python CNN/classification_6cats_new/train.py --config CNN/classification_6cats_new/configs/train.yaml
-python CNN/classification_6cats_new/export_onnx.py
+python CNN/clf_7cats_tier1/train.py --config CNN/clf_7cats_tier1/configs/train.yaml
+python CNN/clf_7cats_tier1/export_onnx.py
 ```
 
 ### Step 2: Run evaluation on your real images (G3_SGData)

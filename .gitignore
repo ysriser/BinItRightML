@@ -47,4 +47,4 @@ CNN/experiments/**/outputs/
 **/lightning_logs/
 
 # Ignore legacy 28cats module
-CNN/classification_28cats/
+CNN/clf_28cats_taco/

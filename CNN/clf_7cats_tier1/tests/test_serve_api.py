@@ -18,7 +18,7 @@ class DummyModel(torch.nn.Module):
 def build_client() -> TestClient:
     # Force the service to skip real model loading during tests.
     os.environ["BINITRIGHT_SKIP_MODEL_LOAD"] = "1"
-    module_name = "CNN.classification_6cats_new.serve"
+    module_name = "CNN.clf_7cats_tier1.serve"
     if module_name in sys.modules:
         del sys.modules[module_name]
     serve = importlib.import_module(module_name)

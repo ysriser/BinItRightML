@@ -3,7 +3,7 @@ from pathlib import Path
 from PIL import Image
 from torchvision import transforms
 
-from CNN.classification_6cats_new.train import CsvDataset
+from CNN.clf_7cats_tier1.train import CsvDataset
 
 
 def _write_image(path: Path) -> None:

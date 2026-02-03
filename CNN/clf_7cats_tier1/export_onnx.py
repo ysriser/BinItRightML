@@ -1,7 +1,7 @@
 """
 Export Tier-1 model to ONNX and optionally sanity-check with ONNX Runtime.
 Run:
-  python ml/classification_6cats_new/export_onnx.py --check-image <path_to_image>
+  python CNN/clf_7cats_tier1/export_onnx.py --check-image <path_to_image>
 """
 
 from __future__ import annotations

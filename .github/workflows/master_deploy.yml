@@ -56,7 +56,7 @@ jobs:
             docker rm python-app-test || true
 
             # Host 8000 -> Container 80 (As per your working production config)
-            docker run -d --name python-app-test -p 8000:80 $PYTHON_IMAGE
+            docker run -d --name python-app-test -p 8000:8000 $PYTHON_IMAGE
             echo "Waiting for container to pass internal health check..."
             timeout 120s bash -c 'until curl -s http://localhost:80/docs > /dev/null; do sleep 5; done'
 
@@ -194,7 +194,7 @@ jobs:
             docker run -d \
               --name python-app-prod \
               --restart always \
-              -p 8000:80 \
+              -p 8000:8000 \
               registry.digitalocean.com/binitright/python-ml-app:${{ env.NEW_TAG }}
 
             docker image prune -f

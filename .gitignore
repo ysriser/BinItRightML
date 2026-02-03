@@ -52,7 +52,6 @@ CNN/clf_28cats_taco/
 
 # Keep data scripts/configs, ignore other data
 CNN/data/**
-!CNN/data/
 !CNN/data/configs/
 !CNN/data/configs/**
 !CNN/data/scripts/

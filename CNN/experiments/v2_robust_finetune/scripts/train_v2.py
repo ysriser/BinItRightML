@@ -7,6 +7,7 @@ import csv
 import json
 import random
 import subprocess
+import warnings
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -30,6 +31,17 @@ try:
     pillow_heif.register_heif_opener()
 except Exception:
     pillow_heif = None
+
+try:
+    import wandb
+except Exception:
+    wandb = None
+
+warnings.filterwarnings(
+    "ignore",
+    message="Palette images with Transparency expressed in bytes should be converted",
+    category=UserWarning,
+)
 
 IMAGE_EXTS = {
     ".jpg",
@@ -235,11 +247,13 @@ class ScaleDownPad:
         scale_range: Tuple[float, float],
         prob: float,
         random_position: bool,
+        pad_value: Tuple[int, int, int],
     ) -> None:
         self.img_size = img_size
         self.scale_range = scale_range
         self.prob = prob
         self.random_position = random_position
+        self.pad_value = pad_value
 
     def __call__(self, img: Image.Image) -> Image.Image:
         if random.random() > self.prob:
@@ -247,7 +261,7 @@ class ScaleDownPad:
         scale = random.uniform(*self.scale_range)
         new_size = max(1, int(round(self.img_size * scale)))
         resized = img.resize((new_size, new_size), resample=Image.BICUBIC)
-        canvas = Image.new("RGB", (self.img_size, self.img_size), (0, 0, 0))
+        canvas = Image.new("RGB", (self.img_size, self.img_size), self.pad_value)
         if self.random_position:
             max_x = self.img_size - new_size
             max_y = self.img_size - new_size
@@ -260,51 +274,96 @@ class ScaleDownPad:
         return canvas
 
 
+class RRCOrCenter:
+    def __init__(
+        self,
+        rrc: transforms.RandomResizedCrop,
+        img_size: int,
+        rrc_p: float,
+    ) -> None:
+        self.rrc = rrc
+        self.img_size = img_size
+        self.rrc_p = rrc_p
+        self._resize = transforms.Resize(
+            int(img_size * 1.15),
+            interpolation=InterpolationMode.BICUBIC,
+        )
+        self._center_crop = transforms.CenterCrop(img_size)
+
+    def __call__(self, img: Image.Image) -> Image.Image:
+        if random.random() < self.rrc_p:
+            return self.rrc(img)
+        return self._center_crop(self._resize(img))
+
+
 def build_train_transform(
     cfg: dict,
     img_size: int,
     mean: Sequence[float],
     std: Sequence[float],
+    phase: str,
 ):
     aug = cfg.get("augment", {})
+    phase_cfg = cfg.get("phase_b", {}) if phase == "b" else {}
+    phase_aug = phase_cfg.get("augment", {}) or {}
+
+    rrc_p = float(aug.get("rrc_p", 1.0))
+    rrc_p = float(phase_cfg.get("rrc_p", rrc_p))
     scale_min = float(aug.get("rrc_scale_min", 0.15))
     scale_max = float(aug.get("rrc_scale_max", 1.0))
     ratio = aug.get("rrc_ratio", [0.75, 1.33])
-    color_jitter = aug.get("color_jitter", [0.3, 0.3, 0.3, 0.1])
+    color_jitter = phase_aug.get(
+        "color_jitter", aug.get("color_jitter", [0.3, 0.3, 0.3, 0.1])
+    )
+    color_jitter_p = float(
+        phase_aug.get("color_jitter_p", aug.get("color_jitter_p", 1.0))
+    )
     hflip_p = float(aug.get("hflip_p", 0.5))
 
-    scale_cfg = aug.get("scale_down_pad", {}) or {}
+    scale_cfg = dict(aug.get("scale_down_pad", {}) or {})
+    phase_scale_cfg = phase_aug.get("scale_down_pad")
+    if isinstance(phase_scale_cfg, dict):
+        scale_cfg.update(phase_scale_cfg)
     scale_enabled = bool(scale_cfg.get("enabled", True))
 
     affine_cfg = aug.get("affine", {}) or {}
     perspective_cfg = aug.get("perspective", {}) or {}
     blur_cfg = aug.get("blur", {}) or {}
 
+    rrc = transforms.RandomResizedCrop(
+        img_size,
+        scale=(scale_min, scale_max),
+        ratio=tuple(ratio),
+        interpolation=InterpolationMode.BICUBIC,
+    )
     transforms_list: List[transforms.Transform] = [
-        transforms.RandomResizedCrop(
-            img_size,
-            scale=(scale_min, scale_max),
-            ratio=tuple(ratio),
-            interpolation=InterpolationMode.BICUBIC,
-        ),
+        RRCOrCenter(rrc=rrc, img_size=img_size, rrc_p=rrc_p)
     ]
 
     if scale_enabled:
+        pad_mode = str(scale_cfg.get("pad_mode", "mean")).lower()
+        if pad_mode == "mean":
+            pad_value = tuple(int(round(m * 255)) for m in mean)
+        else:
+            pad_value = (0, 0, 0)
         transforms_list.append(
             ScaleDownPad(
                 img_size=img_size,
                 scale_range=tuple(scale_cfg.get("scale_range", [0.3, 0.7])),
                 prob=float(scale_cfg.get("prob", 0.5)),
                 random_position=bool(scale_cfg.get("random_position", True)),
+                pad_value=pad_value,
             )
         )
 
-    transforms_list.extend(
-        [
-            transforms.RandomHorizontalFlip(p=hflip_p),
-            transforms.ColorJitter(*color_jitter),
-        ]
-    )
+    transforms_list.append(transforms.RandomHorizontalFlip(p=hflip_p))
+    if color_jitter_p > 0:
+        transforms_list.append(
+            transforms.RandomApply(
+                [transforms.ColorJitter(*color_jitter)],
+                p=color_jitter_p,
+            )
+        )
 
     if float(affine_cfg.get("p", 0.0)) > 0:
         transforms_list.append(
@@ -351,9 +410,27 @@ def build_train_transform(
         ]
     )
 
-    erasing_p = float(aug.get("random_erasing_p", 0.0))
+    erasing_p = float(
+        phase_aug.get("random_erasing_p", aug.get("random_erasing_p", 0.0))
+    )
+    erasing_scale = tuple(
+        phase_aug.get(
+            "random_erasing_scale", aug.get("random_erasing_scale", [0.02, 0.33])
+        )
+    )
+    erasing_ratio = tuple(
+        phase_aug.get(
+            "random_erasing_ratio", aug.get("random_erasing_ratio", [0.3, 3.3])
+        )
+    )
     if erasing_p > 0:
-        transforms_list.append(transforms.RandomErasing(p=erasing_p))
+        transforms_list.append(
+            transforms.RandomErasing(
+                p=erasing_p,
+                scale=erasing_scale,
+                ratio=erasing_ratio,
+            )
+        )
 
     return transforms.Compose(transforms_list)
 
@@ -524,6 +601,69 @@ def save_confusion(
         pass
 
 
+def save_history(
+    rows: List[Dict[str, float]],
+    out_dir: Path,
+) -> None:
+    if not rows:
+        return
+    rows = sorted(rows, key=lambda r: r.get("global_epoch", r.get("epoch", 0)))
+    csv_path = out_dir / "metrics.csv"
+    json_path = out_dir / "metrics.json"
+    fieldnames = list(rows[0].keys())
+    with csv_path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+    with json_path.open("w", encoding="utf-8") as f:
+        json.dump(rows, f, indent=2)
+
+    try:
+        import matplotlib.pyplot as plt
+
+        epochs = [
+            row.get("global_epoch", row.get("epoch", 0)) for row in rows
+        ]
+        train_loss = [row["train_loss"] for row in rows]
+        val_top1 = [row["val_top1"] for row in rows]
+        val_f1 = [row["val_f1"] for row in rows]
+        fig, ax = plt.subplots(1, 2, figsize=(10, 4))
+        ax[0].plot(epochs, train_loss, label="train_loss")
+        ax[0].set_title("Train Loss")
+        ax[0].set_xlabel("epoch")
+        ax[0].legend()
+        ax[1].plot(epochs, val_top1, label="val_top1")
+        ax[1].plot(epochs, val_f1, label="val_f1")
+        ax[1].set_title("Val Metrics")
+        ax[1].set_xlabel("epoch")
+        ax[1].legend()
+        fig.tight_layout()
+        fig.savefig(out_dir / "curves.png", dpi=150)
+        plt.close(fig)
+    except Exception:
+        pass
+
+
+def summarize_phases(history: List[Dict[str, float]]) -> Dict[str, Dict[str, float]]:
+    summary: Dict[str, Dict[str, float]] = {}
+    for phase_id in (1, 2):
+        phase_rows = [row for row in history if int(row.get("phase", 0)) == phase_id]
+        if not phase_rows:
+            continue
+        best = max(phase_rows, key=lambda r: r.get("val_f1", 0.0))
+        summary[f"phase_{phase_id}"] = {
+            "epoch": int(best.get("epoch", 0)),
+            "global_epoch": int(best.get("global_epoch", best.get("epoch", 0))),
+            "val_top1": float(best.get("val_top1", 0.0)),
+            "val_top3": float(best.get("val_top3", 0.0)),
+            "val_f1": float(best.get("val_f1", 0.0)),
+            "train_loss": float(best.get("train_loss", 0.0)),
+            "train_acc": float(best.get("train_acc", 0.0)),
+        }
+    return summary
+
+
 def get_git_commit(repo_root: Path) -> Optional[str]:
     try:
         result = subprocess.run(
@@ -539,6 +679,139 @@ def get_git_commit(repo_root: Path) -> Optional[str]:
     except Exception:
         return None
     return None
+
+
+def resolve_head_module(model: torch.nn.Module) -> Optional[torch.nn.Module]:
+    if hasattr(model, "get_classifier"):
+        head = model.get_classifier()
+        if isinstance(head, torch.nn.Module):
+            return head
+    for attr in ("classifier", "fc", "head"):
+        if hasattr(model, attr):
+            head = getattr(model, attr)
+            if isinstance(head, torch.nn.Module):
+                return head
+    return None
+
+
+def setup_wandb(cfg: dict, run_dir: Path, run_name: str) -> Optional["wandb.sdk.wandb_run.Run"]:
+    wb_cfg = cfg.get("wandb", {}) or {}
+    if not wb_cfg.get("enabled", False):
+        return None
+    if wandb is None:
+        raise ImportError("wandb is enabled in config but not installed.")
+    project = wb_cfg.get("project", "bin-it-right")
+    entity = wb_cfg.get("entity")
+    tags = wb_cfg.get("tags", [])
+    mode = wb_cfg.get("mode", "online")
+    return wandb.init(
+        project=project,
+        entity=entity,
+        tags=tags,
+        mode=mode,
+        name=run_name,
+        dir=str(run_dir),
+        config=cfg,
+    )
+
+
+def log_wandb(
+    run: Optional["wandb.sdk.wandb_run.Run"],
+    data: Dict[str, float],
+) -> None:
+    if run is None:
+        return
+    run.log(data)
+
+
+def split_backbone_head_params(
+    model: torch.nn.Module,
+) -> Tuple[List[torch.nn.Parameter], List[torch.nn.Parameter]]:
+    head = resolve_head_module(model)
+    if head is None:
+        return list(model.parameters()), []
+    head_ids = {id(p) for p in head.parameters()}
+    head_params = [p for p in model.parameters() if id(p) in head_ids]
+    backbone_params = [p for p in model.parameters() if id(p) not in head_ids]
+    return backbone_params, head_params
+
+
+def set_requires_grad(params: List[torch.nn.Parameter], value: bool) -> None:
+    for param in params:
+        param.requires_grad = value
+
+
+def export_onnx_model(
+    model: torch.nn.Module,
+    artifact_dir: Path,
+    labels: List[str],
+    img_size: int,
+    mean: Sequence[float],
+    std: Sequence[float],
+    opset: int,
+    backbone: str,
+    infer_cfg: dict,
+) -> Path:
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    onnx_path = artifact_dir / "model.onnx"
+    orig_device = next(model.parameters()).device
+    model_cpu = model.to("cpu")
+    model_cpu.eval()
+    dummy = torch.randn(1, 3, img_size, img_size)
+    torch.onnx.export(
+        model_cpu,
+        dummy,
+        onnx_path,
+        input_names=["input"],
+        output_names=["logits"],
+        dynamic_axes={"input": {0: "batch"}, "logits": {0: "batch"}},
+        opset_version=opset,
+    )
+    model.to(orig_device)
+    infer_out = {
+        "backbone": backbone,
+        "img_size": img_size,
+        "mean": mean,
+        "std": std,
+        "topk": infer_cfg.get("topk", 3),
+        "conf_threshold": infer_cfg.get("conf_threshold", 0.75),
+        "margin_threshold": infer_cfg.get("margin_threshold", 0.15),
+    }
+    save_json(artifact_dir / "infer_config.json", infer_out)
+    save_json(artifact_dir / "label_map.json", {"labels": labels})
+    return onnx_path
+
+
+def update_models_dir(
+    artifact_dir: Path,
+    models_dir: Path,
+) -> None:
+    models_dir.mkdir(parents=True, exist_ok=True)
+    mapping = {
+        "best.pt": "tier1_best.pt",
+        "model.onnx": "tier1.onnx",
+        "infer_config.json": "infer_config.json",
+        "label_map.json": "label_map.json",
+    }
+    for src_name, dst_name in mapping.items():
+        src = artifact_dir / src_name
+        if src.exists():
+            (models_dir / dst_name).write_bytes(src.read_bytes())
+
+
+def save_phase_a_latest(
+    model: torch.nn.Module,
+    artifact_dir: Path,
+    models_dir: Path,
+) -> Path:
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    models_dir.mkdir(parents=True, exist_ok=True)
+    phase_a_path = artifact_dir / "phase_a_latest.pt"
+    torch.save(model.state_dict(), phase_a_path)
+    (models_dir / "tier1_phase_a_latest.pt").write_bytes(
+        phase_a_path.read_bytes()
+    )
+    return phase_a_path
 
 
 def parse_args() -> argparse.Namespace:
@@ -583,18 +856,31 @@ def main() -> None:
     mean = data_cfg_model["mean"]
     std = data_cfg_model["std"]
 
-    train_transform = build_train_transform(cfg, img_size, mean, std)
+    train_transform_a = build_train_transform(cfg, img_size, mean, std, phase="a")
+    train_transform_b = build_train_transform(cfg, img_size, mean, std, phase="b")
     eval_transform = build_eval_transform(img_size, mean, std)
 
     data_cfg = cfg.get("data", {})
-    loader_kwargs = {
-        "batch_size": int(data_cfg.get("batch_size", 32)),
-        "num_workers": int(data_cfg.get("num_workers", 4)),
-        "pin_memory": bool(data_cfg.get("pin_memory", True)),
-        "persistent_workers": bool(data_cfg.get("persistent_workers", True)),
-        "prefetch_factor": int(data_cfg.get("prefetch_factor", 2)),
-        "worker_init_fn": seed_worker,
-    }
+    base_batch_size = int(data_cfg.get("batch_size", 32))
+    base_workers = int(data_cfg.get("num_workers", 4))
+    base_pin = bool(data_cfg.get("pin_memory", True))
+    base_persistent = bool(data_cfg.get("persistent_workers", True))
+    base_prefetch = int(data_cfg.get("prefetch_factor", 2))
+
+    def make_loader_kwargs(num_workers: int) -> Dict[str, object]:
+        kwargs: Dict[str, object] = {
+            "batch_size": base_batch_size,
+            "num_workers": num_workers,
+            "pin_memory": base_pin,
+            "worker_init_fn": seed_worker if num_workers > 0 else None,
+        }
+        if num_workers > 0:
+            kwargs["persistent_workers"] = base_persistent
+            kwargs["prefetch_factor"] = base_prefetch
+        return kwargs
+
+    train_loader_kwargs = make_loader_kwargs(base_workers)
+    eval_loader_kwargs = make_loader_kwargs(0)
 
     paths = cfg.get("paths", {})
     train_csv = Path(
@@ -618,6 +904,7 @@ def main() -> None:
             "CNN/experiments/v2_robust_finetune/artifacts",
         )
     )
+    models_dir = Path(paths.get("models_dir", "CNN/models"))
 
     run_name = datetime.now().strftime("robust_v2_%Y%m%d_%H%M%S")
     run_dir = output_root / run_name
@@ -628,13 +915,25 @@ def main() -> None:
     with (run_dir / "config_snapshot.yaml").open("w", encoding="utf-8") as f:
         yaml.safe_dump(cfg, f, sort_keys=False)
 
+    wb_run = setup_wandb(cfg, run_dir, run_name)
+    if wb_run is not None:
+        wb_run.summary["train_csv"] = str(train_csv)
+        wb_run.summary["val_csv"] = str(val_csv)
+        wb_run.summary["test_csv"] = str(test_csv)
+        wb_run.summary["domain_dir"] = str(g3_data_dir)
+
     phase_a = cfg.get("phase_a", {})
     phase_b = cfg.get("phase_b", {})
+    phase_b_only = bool(phase_b.get("only", False))
+    phase_a_epochs = int(phase_a.get("epochs", 10))
+    phase_b_epochs = int(phase_b.get("epochs", 5))
+    if phase_b_only:
+        phase_a_epochs = 0
 
     train_ds = CsvDataset(
         train_csv,
         label_to_idx,
-        transform=train_transform,
+        transform=train_transform_a,
         verify_images=bool(data_cfg.get("verify_images", False)),
         skip_bad_images=bool(data_cfg.get("skip_bad_images", True)),
         max_retry=int(data_cfg.get("max_retry", 5)),
@@ -664,9 +963,9 @@ def main() -> None:
         replacement=True,
     )
 
-    train_loader = DataLoader(train_ds, sampler=sampler, **loader_kwargs)
-    val_loader = DataLoader(val_ds, shuffle=False, **loader_kwargs)
-    test_loader = DataLoader(test_ds, shuffle=False, **loader_kwargs)
+    train_loader = DataLoader(train_ds, sampler=sampler, **train_loader_kwargs)
+    val_loader = DataLoader(val_ds, shuffle=False, **eval_loader_kwargs)
+    test_loader = DataLoader(test_ds, shuffle=False, **eval_loader_kwargs)
 
     if not g3_data_dir.exists():
         raise FileNotFoundError(f"Missing domain data dir: {g3_data_dir}")
@@ -678,7 +977,7 @@ def main() -> None:
         float(phase_b.get("val_ratio", 0.2)),
         seed,
     )
-    domain_train_ds = ListDataset(domain_split.train, transform=train_transform)
+    domain_train_ds = ListDataset(domain_split.train, transform=train_transform_b)
     domain_val_ds = ListDataset(domain_split.val, transform=eval_transform)
     use_domain_val = bool(phase_b.get("prefer_domain_val", True)) and len(
         domain_val_ds
@@ -696,21 +995,22 @@ def main() -> None:
     domain_train_loader = DataLoader(
         domain_train_ds,
         sampler=domain_sampler,
-        **loader_kwargs,
+        **train_loader_kwargs,
     )
-    domain_val_loader = DataLoader(domain_val_ds, shuffle=False, **loader_kwargs)
+    domain_val_loader = DataLoader(domain_val_ds, shuffle=False, **eval_loader_kwargs)
 
     loss_cfg = cfg.get("loss", {})
     label_smoothing = float(loss_cfg.get("label_smoothing", 0.05))
     ce_loss = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
 
-    mix_cfg = cfg.get("mixup_cutmix", {}) or {}
+    mix_cfg_a = cfg.get("mixup_cutmix", {}) or {}
+    mix_cfg_b = cfg.get("phase_b", {}).get("mixup_cutmix", mix_cfg_a) or {}
     scale_cfg = cfg.get("augment", {}).get("scale_down_pad", {}) or {}
     print(
         "Augmentations -> "
         f"scale_down_pad={scale_cfg.get('enabled', True)} "
-        f"mixup_p={mix_cfg.get('mixup_p', 0.0)} "
-        f"cutmix_p={mix_cfg.get('cutmix_p', 0.0)}"
+        f"mixup_p={mix_cfg_a.get('mixup_p', 0.0)} "
+        f"cutmix_p={mix_cfg_a.get('cutmix_p', 0.0)}"
     )
 
     optim_cfg = cfg.get("optimizer", {})
@@ -727,15 +1027,49 @@ def main() -> None:
             )
         return torch.optim.Adam(model.parameters(), lr=lr)
 
-    sched_cfg = cfg.get("scheduler", {})
-    scheduler_enabled = bool(sched_cfg.get("enabled", True))
-    scheduler_name = sched_cfg.get("name", "cosine")
-    min_lr = float(sched_cfg.get("min_lr", 1e-6))
+    def make_optimizer_split(
+        backbone_params: List[torch.nn.Parameter],
+        head_params: List[torch.nn.Parameter],
+        backbone_lr: float,
+        head_lr: float,
+    ) -> torch.optim.Optimizer:
+        params = []
+        if backbone_params:
+            params.append(
+                {
+                    "params": backbone_params,
+                    "lr": backbone_lr,
+                    "weight_decay": weight_decay,
+                }
+            )
+        if head_params:
+            params.append(
+                {
+                    "params": head_params,
+                    "lr": head_lr,
+                    "weight_decay": weight_decay,
+                }
+            )
+        if optim_cfg.get("name", "adamw").lower() == "adamw":
+            return torch.optim.AdamW(params, betas=betas)
+        return torch.optim.Adam(params)
 
-    def make_scheduler(optimizer: torch.optim.Optimizer, epochs: int):
-        if not scheduler_enabled:
+    sched_cfg = cfg.get("scheduler", {})
+
+    def make_scheduler(
+        optimizer: torch.optim.Optimizer,
+        epochs: int,
+        override: Optional[dict] = None,
+    ):
+        cfg_local = dict(sched_cfg)
+        if isinstance(override, dict):
+            cfg_local.update(override)
+        enabled = bool(cfg_local.get("enabled", True))
+        if not enabled:
             return None
-        if scheduler_name == "cosine":
+        name = cfg_local.get("name", "cosine")
+        min_lr = float(cfg_local.get("min_lr", 1e-6))
+        if name == "cosine":
             return torch.optim.lr_scheduler.CosineAnnealingLR(
                 optimizer,
                 T_max=epochs,
@@ -759,10 +1093,12 @@ def main() -> None:
     best_epoch = 0
     best_source = "val"
     no_improve = 0
+    history: List[Dict[str, float]] = []
 
     def run_epoch(
         loader: DataLoader,
         optimizer: torch.optim.Optimizer,
+        mix_cfg: dict,
     ) -> Tuple[float, float]:
         model.train()
         total_loss = 0.0
@@ -839,75 +1175,275 @@ def main() -> None:
             no_improve += 1
         return metrics
 
-    print("Phase A: mixed dataset")
-    optimizer = make_optimizer(float(phase_a.get("lr", 1e-3)))
-    scheduler = make_scheduler(optimizer, int(phase_a.get("epochs", 10)))
+    if phase_b_only:
+        phase_a_ckpt = phase_b.get("phase_a_checkpoint")
+        if not phase_a_ckpt:
+            phase_a_ckpt = models_dir / "tier1_phase_a_latest.pt"
+        phase_a_ckpt = Path(phase_a_ckpt)
+        if not phase_a_ckpt.exists():
+            raise FileNotFoundError(
+                f"Phase A checkpoint not found: {phase_a_ckpt}"
+            )
+        state = torch.load(phase_a_ckpt, map_location=device, weights_only=True)
+        model.loa e = model.state_dict()
+        print(f"Phase A skipped. Loaded: {phase_a_ckpt}")
+    else:
+        print("Phase A: mixed dataset")
+        optimizer = make_optimizer(float(phase_a.get("lr", 1e-3)))
+        scheduler = make_scheduler(optimizer, int(phase_a.get("epochs", 10)))
 
-    for epoch in range(1, int(phase_a.get("epochs", 10)) + 1):
-        train_loss, train_acc = run_epoch(train_loader, optimizer)
-        if scheduler:
-            scheduler.step()
+        for epoch in range(1, phase_a_epochs + 1):
+            train_loss, train_acc = run_epoch(train_loader, optimizer, mix_cfg_a)
+            if scheduler:
+                scheduler.step()
 
-        val_metrics, _, _ = evaluate(model, val_loader, device, labels)
-        source_metrics = val_metrics
-        if use_domain_val:
-            source_metrics, _, _ = evaluate(model, domain_val_loader, device, labels)
+            val_metrics, _, _ = evaluate(model, val_loader, device, labels)
+            source_metrics = val_metrics
+            domain_metrics = None
+            if use_domain_val:
+                domain_metrics, _, _ = evaluate(
+                    model, domain_val_loader, device, labels
+                )
+                source_metrics = domain_metrics
 
-        if source_metrics["macro_f1"] > best_f1:
-            best_state = model.state_dict()
-            best_f1 = source_metrics["macro_f1"]
-            best_metrics = source_metrics
-            best_epoch = epoch
-            best_source = "domain_val" if source_metrics is not val_metrics else "val"
-            no_improve = 0
-        else:
-            no_improve += 1
+            if source_metrics["macro_f1"] > best_f1:
+                best_state = model.state_dict()
+                best_f1 = source_metrics["macro_f1"]
+                best_metrics = source_metrics
+                best_epoch = epoch
+                best_source = (
+                    "domain_val" if source_metrics is not val_metrics else "val"
+                )
+                no_improve = 0
+            else:
+                no_improve += 1
 
-        print(
-            f"Epoch {epoch}/{phase_a.get('epochs', 10)} "
-            f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} "
-            f"val_f1={val_metrics['macro_f1']:.4f}"
-        )
+            history.append(
+                {
+                    "phase": 1,
+                    "epoch": epoch,
+                    "global_epoch": epoch,
+                    "train_loss": float(train_loss),
+                    "train_acc": float(train_acc),
+                    "val_top1": float(val_metrics["top1"]),
+                    "val_top3": float(val_metrics["top3"]),
+                    "val_f1": float(val_metrics["macro_f1"]),
+                }
+            )
+            msg = (
+                f"Epoch {epoch}/{phase_a_epochs} "
+                f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} "
+                f"val_top1={val_metrics['top1']:.4f} "
+                f"val_top3={val_metrics['top3']:.4f} "
+                f"val_f1={val_metrics['macro_f1']:.4f}"
+            )
+            if domain_metrics is not None:
+                msg += (
+                    f"\ndomain_top1={domain_metrics['top1']:.4f} "
+                    f"domain_top3={domain_metrics['top3']:.4f} "
+                    f"domain_f1={domain_metrics['macro_f1']:.4f}"
+                )
+            print(msg)
+            log_wandb(
+                wb_run,
+                {
+                    "phase": 1,
+                    "epoch": epoch,
+                    "global_epoch": epoch,
+                    "train_loss": train_loss,
+                    "train_acc": train_acc,
+                    "val_top1": val_metrics["top1"],
+                    "val_top3": val_metrics["top3"],
+                    "val_f1": val_metrics["macro_f1"],
+                    "lr": optimizer.param_groups[0]["lr"],
+                },
+            )
+            if domain_metrics is not None:
+                log_wandb(
+                    wb_run,
+                    {
+                        "domain_top1": domain_metrics["top1"],
+                        "domain_top3": domain_metrics["top3"],
+                        "domain_f1": domain_metrics["macro_f1"],
+                    },
+                )
 
-        if early_patience > 0 and no_improve >= early_patience:
-            print("Early stopping in Phase A")
-            break
+            if early_patience > 0 and no_improve >= early_patience:
+                print("Early stopping in Phase A")
+                break
+
+        phase_a_path = save_phase_a_latest(model, artifact_dir, models_dir)
+        print(f"Saved Phase A latest -> {phase_a_path}")
 
     print("Phase B: domain fine-tune")
-    optimizer = make_optimizer(float(phase_b.get("lr", 2e-4)))
-    scheduler = make_scheduler(optimizer, int(phase_b.get("epochs", 5)))
+    phase_b_lr = float(phase_b.get("lr", 2e-4))
+    phase_b_sched = phase_b.get("scheduler", {})
+    freeze_epochs = int(phase_b.get("freeze_epochs", 0))
+    head_lr = float(phase_b.get("head_lr", phase_b_lr))
+    backbone_lr = float(phase_b.get("backbone_lr", phase_b_lr * 0.25))
+    phase_b_total = phase_b_epochs
+    phase_b_done = 0
     no_improve = 0
 
-    for epoch in range(1, int(phase_b.get("epochs", 5)) + 1):
-        train_loss, train_acc = run_epoch(domain_train_loader, optimizer)
-        if scheduler:
-            scheduler.step()
+    backbone_params, head_params = split_backbone_head_params(model)
 
-        source_metrics, _, _ = evaluate(
-            model,
-            domain_val_loader if use_domain_val else val_loader,
-            device,
-            labels,
-        )
-        if source_metrics["macro_f1"] > best_f1:
-            best_state = model.state_dict()
-            best_f1 = source_metrics["macro_f1"]
-            best_metrics = source_metrics
-            best_epoch = epoch
-            best_source = "domain_val"
-            no_improve = 0
-        else:
-            no_improve += 1
-
+    if freeze_epochs > 0 and head_params:
         print(
-            f"Epoch {epoch}/{phase_b.get('epochs', 5)} "
-            f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} "
-            f"domain_f1={source_metrics['macro_f1']:.4f}"
+            f"Phase B1: head-only fine-tune for {freeze_epochs} epoch(s) "
+            f"(head_lr={head_lr})"
+        )
+        set_requires_grad(backbone_params, False)
+        set_requires_grad(head_params, True)
+        optimizer = make_optimizer_split(
+            backbone_params=[],
+            head_params=head_params,
+            backbone_lr=backbone_lr,
+            head_lr=head_lr,
+        )
+        scheduler = make_scheduler(
+            optimizer,
+            min(freeze_epochs, phase_b_total),
+            override=phase_b_sched,
         )
 
-        if early_patience > 0 and no_improve >= early_patience:
-            print("Early stopping in Phase B")
-            break
+        for epoch in range(1, min(freeze_epochs, phase_b_total) + 1):
+            train_loss, train_acc = run_epoch(
+                domain_train_loader, optimizer, mix_cfg_b
+            )
+            if scheduler:
+                scheduler.step()
+            source_metrics, _, _ = evaluate(
+                model,
+                domain_val_loader if use_domain_val else val_loader,
+                device,
+                labels,
+            )
+            phase_b_done += 1
+            history.append(
+                {
+                    "phase": 2,
+                    "epoch": phase_b_done,
+                    "global_epoch": phase_a_epochs + phase_b_done,
+                    "train_loss": float(train_loss),
+                    "train_acc": float(train_acc),
+                    "val_top1": float(source_metrics["top1"]),
+                    "val_top3": float(source_metrics["top3"]),
+                    "val_f1": float(source_metrics["macro_f1"]),
+                }
+            )
+            print(
+                f"Epoch {phase_b_done}/{phase_b_total} "
+                f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} "
+                f"val_top1={source_metrics['top1']:.4f} "
+                f"val_top3={source_metrics['top3']:.4f} "
+                f"val_f1={source_metrics['macro_f1']:.4f}"
+            )
+            log_wandb(
+                wb_run,
+                {
+                    "phase": 2,
+                    "epoch": phase_b_done,
+                    "global_epoch": phase_a_epochs + phase_b_done,
+                    "train_loss": train_loss,
+                    "train_acc": train_acc,
+                    "val_top1": source_metrics["top1"],
+                    "val_top3": source_metrics["top3"],
+                    "val_f1": source_metrics["macro_f1"],
+                    "lr": optimizer.param_groups[0]["lr"],
+                },
+            )
+
+            if source_metrics["macro_f1"] > best_f1:
+                best_state = model.state_dict()
+                best_f1 = source_metrics["macro_f1"]
+                best_metrics = source_metrics
+                best_epoch = phase_b_done
+                best_source = "domain_val"
+                no_improve = 0
+            else:
+                no_improve += 1
+            if early_patience > 0 and no_improve >= early_patience:
+                print("Early stopping in Phase B1")
+                break
+
+    if phase_b_done < phase_b_total:
+        remaining = phase_b_total - phase_b_done
+        print(
+            f"Phase B2: full fine-tune for {remaining} epoch(s) "
+            f"(backbone_lr={backbone_lr}, head_lr={head_lr})"
+        )
+        set_requires_grad(backbone_params, True)
+        set_requires_grad(head_params, True)
+        optimizer = make_optimizer_split(
+            backbone_params=backbone_params,
+            head_params=head_params,
+            backbone_lr=backbone_lr,
+            head_lr=head_lr,
+        )
+        scheduler = make_scheduler(optimizer, remaining, override=phase_b_sched)
+        no_improve = 0
+
+        for epoch in range(1, remaining + 1):
+            train_loss, train_acc = run_epoch(
+                domain_train_loader, optimizer, mix_cfg_b
+            )
+            if scheduler:
+                scheduler.step()
+
+            source_metrics, _, _ = evaluate(
+                model,
+                domain_val_loader if use_domain_val else val_loader,
+                device,
+                labels,
+            )
+            phase_b_done += 1
+            if source_metrics["macro_f1"] > best_f1:
+                best_state = model.state_dict()
+                best_f1 = source_metrics["macro_f1"]
+                best_metrics = source_metrics
+                best_epoch = phase_b_done
+                best_source = "domain_val"
+                no_improve = 0
+            else:
+                no_improve += 1
+
+            history.append(
+                {
+                    "phase": 2,
+                    "epoch": phase_b_done,
+                    "global_epoch": phase_a_epochs + phase_b_done,
+                    "train_loss": float(train_loss),
+                    "train_acc": float(train_acc),
+                    "val_top1": float(source_metrics["top1"]),
+                    "val_top3": float(source_metrics["top3"]),
+                    "val_f1": float(source_metrics["macro_f1"]),
+                }
+            )
+            print(
+                f"Epoch {phase_b_done}/{phase_b_total} "
+                f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} "
+                f"val_top1={source_metrics['top1']:.4f} "
+                f"val_top3={source_metrics['top3']:.4f} "
+                f"val_f1={source_metrics['macro_f1']:.4f}"
+            )
+            log_wandb(
+                wb_run,
+                {
+                    "phase": 2,
+                    "epoch": phase_b_done,
+                    "global_epoch": phase_a_epochs + phase_b_done,
+                    "train_loss": train_loss,
+                    "train_acc": train_acc,
+                    "val_top1": source_metrics["top1"],
+                    "val_top3": source_metrics["top3"],
+                    "val_f1": source_metrics["macro_f1"],
+                    "lr": optimizer.param_groups[0]["lr"],
+                },
+            )
+
+            if early_patience > 0 and no_improve >= early_patience:
+                print("Early stopping in Phase B2")
+                break
 
     if best_state is None:
         best_state = model.state_dict()
@@ -916,10 +1452,40 @@ def main() -> None:
     torch.save(best_state, best_path)
 
     model.load_state_dict(best_state)
-    test_metrics, test_labels, test_preds = evaluate(model, test_loader, device, labels)
-    save_confusion(test_labels, test_preds, labels, run_dir / "test_confusion.png")
+    val_metrics, val_labels, val_preds = evaluate(
+        model, val_loader, device, labels
+    )
+    test_metrics, test_labels, test_preds = evaluate(
+        model, test_loader, device, labels
+    )
+    domain_metrics = None
+    domain_labels: List[int] = []
+    domain_preds: List[int] = []
+    if use_domain_val:
+        domain_metrics, domain_labels, domain_preds = evaluate(
+            model, domain_val_loader, device, labels
+        )
 
-    report = classification_report(
+    save_confusion(val_labels, val_preds, labels, run_dir / "val_confusion.png")
+    save_confusion(test_labels, test_preds, labels, run_dir / "test_confusion.png")
+    if domain_metrics is not None:
+        save_confusion(
+            domain_labels,
+            domain_preds,
+            labels,
+            run_dir / "domain_val_confusion.png",
+        )
+
+    val_report = classification_report(
+        val_labels,
+        val_preds,
+        labels=list(range(len(labels))),
+        target_names=labels,
+        digits=4,
+        zero_division=0,
+        output_dict=True,
+    )
+    test_report = classification_report(
         test_labels,
         test_preds,
         labels=list(range(len(labels))),
@@ -928,35 +1494,95 @@ def main() -> None:
         zero_division=0,
         output_dict=True,
     )
-    save_json(run_dir / "test_report.json", report)
+    save_json(run_dir / "val_report.json", val_report)
+    save_json(run_dir / "test_report.json", test_report)
+    if domain_metrics is not None:
+        domain_report = classification_report(
+            domain_labels,
+            domain_preds,
+            labels=list(range(len(labels))),
+            target_names=labels,
+            digits=4,
+            zero_division=0,
+            output_dict=True,
+        )
+        save_json(run_dir / "domain_val_report.json", domain_report)
 
-    infer_cfg = {
-        "backbone": backbone,
-        "img_size": img_size,
-        "mean": mean,
-        "std": std,
-        "topk": cfg.get("infer", {}).get("topk", 3),
-        "conf_threshold": cfg.get("infer", {}).get("conf_threshold", 0.75),
-        "margin_threshold": cfg.get("infer", {}).get("margin_threshold", 0.15),
-    }
-    save_json(artifact_dir / "infer_config.json", infer_cfg)
-    save_json(artifact_dir / "label_map.json", {"labels": labels})
+    save_json(run_dir / "val_metrics.json", val_metrics)
+    save_json(run_dir / "test_metrics.json", test_metrics)
+    if domain_metrics is not None:
+        save_json(run_dir / "domain_val_metrics.json", domain_metrics)
 
+    save_history(history, run_dir)
+    for name in (
+        "metrics.csv",
+        "metrics.json",
+        "curves.png",
+        "val_confusion.png",
+        "test_confusion.png",
+        "domain_val_confusion.png",
+        "val_report.json",
+        "test_report.json",
+        "domain_val_report.json",
+        "val_metrics.json",
+        "test_metrics.json",
+        "domain_val_metrics.json",
+    ):
+        src = run_dir / name
+        if src.exists():
+            (artifact_dir / name).write_bytes(src.read_bytes())
+
+    opset = int(cfg.get("onnx", {}).get("opset", 17))
+    infer_cfg = cfg.get("infer", {}) or {}
+    onnx_path = export_onnx_model(
+        model=model,
+        artifact_dir=artifact_dir,
+        labels=labels,
+        img_size=img_size,
+        mean=mean,
+        std=std,
+        opset=opset,
+        backbone=backbone,
+        infer_cfg=infer_cfg,
+    )
+    update_models_dir(artifact_dir, models_dir)
+
+    phase_summary = summarize_phases(history)
     summary = {
         "run_name": run_name,
         "best_epoch": best_epoch,
         "best_source": best_source,
         "best_metrics": best_metrics,
+        "val_metrics": val_metrics,
         "test_metrics": test_metrics,
+        "domain_val_metrics": domain_metrics,
+        "phase_summary": phase_summary,
         "config": cfg,
         "git_commit": get_git_commit(Path.cwd()),
     }
     save_json(artifact_dir / "run_summary.json", summary)
+    if wb_run is not None:
+        wb_run.summary.update(
+            {
+                "best_epoch": best_epoch,
+                "best_source": best_source,
+                "best_f1": best_f1,
+                "val_top1": val_metrics["top1"],
+                "val_top3": val_metrics["top3"],
+                "val_f1": val_metrics["macro_f1"],
+                "test_top1": test_metrics["top1"],
+                "test_top3": test_metrics["top3"],
+                "test_f1": test_metrics["macro_f1"],
+            }
+        )
+        wb_run.finish()
 
     last_run_path = output_root / "last_run.txt"
     last_run_path.write_text(str(artifact_dir), encoding="utf-8")
 
     print(f"Saved best checkpoint -> {best_path}")
+    print(f"Exported ONNX -> {onnx_path}")
+    print(f"Updated models -> {models_dir}")
     print(
         f"Test top1={test_metrics['top1']:.4f} "
         f"top3={test_metrics['top3']:.4f} "

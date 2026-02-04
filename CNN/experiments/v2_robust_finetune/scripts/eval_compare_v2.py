@@ -265,7 +265,11 @@ def softmax(logits: np.ndarray) -> np.ndarray:
 
 
 def load_decision_utils():
-    repo_root = Path(__file__).resolve().parents[3]
+    repo_root = Path(__file__).resolve()
+    for _ in range(6):
+        if (repo_root / "CNN").is_dir():
+            break
+        repo_root = repo_root.parent
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
     from CNN.shared import decision as decision_utils
@@ -375,12 +379,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--robust-model",
         type=Path,
-        default=None,
+        default=Path("CNN/models/tier1.onnx"),
     )
     p.add_argument(
         "--robust-infer",
         type=Path,
-        default=None,
+        default=Path("CNN/models/infer_config.json"),
     )
     p.add_argument(
         "--label-map",
@@ -423,7 +427,7 @@ def main() -> None:
         raise ValueError("No evaluation data found")
 
     output_dir = args.output_dir / datetime.now().strftime(
-        "eval_compare_v1_%Y%m%d_%H%M%S"
+        "eval_compare_v2_%Y%m%d_%H%M%S"
     )
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -444,20 +448,7 @@ def main() -> None:
     )
 
     robust_model = args.robust_model
-    if robust_model is None:
-        last_run = args.output_dir / "last_run.txt"
-        if last_run.exists():
-            robust_model = Path(
-                last_run.read_text(encoding="utf-8").strip()
-            ) / "model.onnx"
-        else:
-            raise FileNotFoundError(
-                "Provide --robust-model or ensure last_run.txt exists"
-            )
-
     robust_infer = args.robust_infer
-    if robust_infer is None:
-        robust_infer = robust_model.parent / "infer_config.json"
 
     r_infer = load_json(robust_infer)
     r_transform = build_transform(
@@ -557,9 +548,9 @@ def main() -> None:
             "(scale-down pad, mixup/cutmix), domain fine-tune LR, and label mapping."
         )
 
-    save_json(output_dir / "eval_compare_v1.json", results)
+    save_json(output_dir / "eval_compare_v2.json", results)
 
-    with (output_dir / "eval_compare_v1.csv").open(
+    with (output_dir / "eval_compare_v2.csv").open(
         "w",
         encoding="utf-8",
         newline="",
@@ -572,7 +563,7 @@ def main() -> None:
         for row in csv_rows:
             writer.writerow(row)
 
-    print(f"Saved -> {output_dir / 'eval_compare_v1.json'}")
+    print(f"Saved -> {output_dir / 'eval_compare_v2.json'}")
     for row in csv_rows:
         print(
             f"{row['model']} {row['group']} "

@@ -2,9 +2,9 @@ from pathlib import Path
 
 import pytest
 
-from CNN.clf_7cats_tier1.scripts.build_manifest_and_splits import (
+from CNN.data.scripts.build_manifest_and_splits import (
     allocate_by_weights,
-    resolve_class_root,
+    resolve_class_roots,
     stable_int,
 )
 
@@ -49,8 +49,11 @@ def test_resolve_class_root_explicit(tmp_path: Path):
     class_root = root / "classes"
     _write_image(class_root / "paper" / "img.jpg")
     # Step 2: resolve using config with class_root.
-    resolved = resolve_class_root({"path": str(root), "class_root": "classes"})
+    resolved, fallbacks = resolve_class_roots(
+        {"path": str(root), "class_root": "classes"}
+    )
     assert resolved == class_root
+    assert fallbacks == []
 
 
 def test_resolve_class_root_auto_detect_base(tmp_path: Path):
@@ -58,8 +61,9 @@ def test_resolve_class_root_auto_detect_base(tmp_path: Path):
     root = tmp_path / "dataset"
     _write_image(root / "plastic" / "img.jpg")
     # Step 2: resolve should return base.
-    resolved = resolve_class_root({"path": str(root)})
+    resolved, fallbacks = resolve_class_roots({"path": str(root)})
     assert resolved == root
+    assert fallbacks == []
 
 
 def test_resolve_class_root_auto_detect_nested(tmp_path: Path):
@@ -68,5 +72,6 @@ def test_resolve_class_root_auto_detect_nested(tmp_path: Path):
     nested = root / "nested"
     _write_image(nested / "glass" / "img.jpg")
     # Step 2: resolve should prefer base when a child folder contains images.
-    resolved = resolve_class_root({"path": str(root)})
+    resolved, fallbacks = resolve_class_roots({"path": str(root)})
     assert resolved == root
+    assert fallbacks == []

@@ -121,6 +121,12 @@ Recommended `tier1` JSON schema:
 }
 ```
 
+`force_cloud` (optional)
+- Type: string (`"true"` / `"false"`)
+- Default: `"false"`
+- Purpose: **debug trigger** to force the Tier-2 path even when Tier-1 is confident.
+  This is useful to test the end-to-end "upgrade path" before a real Tier-2 LLM/VLM is integrated.
+
 ### 4.3 Success response (HTTP 200)
 Top-level envelope:
 ```json
@@ -135,14 +141,16 @@ Top-level envelope:
 - `tier1` (optional, object or null): echoes Tier-1 results (from Android or server fallback)
 - `decision` (required): Tier-2 usage and reason codes
 - `final` (required): UI-ready final decision and instructions
-- `followup` (optional but recommended): questions when still uncertain
 - `meta` (optional): schema/model versions, latency
 
 #### 4.3.1 `data.final` (UI-critical contract)
+Android UI MUST only depend on the 5 critical fields:
+`category`, `recyclable`, `confidence`, `instruction`, `instructions`.
+Other fields are considered **legacy** (kept temporarily to avoid breaking existing clients).
+
 ```json
 {
   "category": "PET Plastic Bottle",
-  "category_id": "plastic.pet_bottle",
   "recyclable": true,
   "confidence": 0.93,
   "instruction": "Rinse and empty containers.",
@@ -150,23 +158,24 @@ Top-level envelope:
     "Empty all contents.",
     "Rinse to remove food residue.",
     "If heavily contaminated, dispose as general waste."
-  ],
-  "disposal_method": "Blue Recycling Bin",
-  "bin_type": "blue",
-  "rationale_tags": ["looks_like_bottle"]
+  ]
 }
 ```
 
 Field semantics:
 - `category` (Critical): short, user-facing item name (Tier-2 may refine beyond Tier-1 labels)
-- `category_id` (Recommended): machine-readable taxonomy id (forward-compatible)
-- `recyclable` (Critical): boolean used by app's primary UI logic
+  - Special routing convention: if it is a special stream, the category MUST start with:
+    - `E-waste - ...`
+    - `Textile - ...`
+- `recyclable` (Critical): **blue-bin flow** boolean (true ONLY if normal recycling bin flow)
+  - E-waste/Textile should be `false` here (separate streams, not blue bin)
 - `confidence` (Critical): system confidence in [0, 1]
 - `instruction` (Critical): one-line instruction shown on the result card
-- `instructions` (Recommended): 2-6 short imperative steps
-- `disposal_method` (Optional): user-facing disposal channel text
-- `bin_type` (Optional): normalized enum `blue|general|ewaste|textile|special|unknown`
-- `rationale_tags` (Optional): <=3 tags for debugging/explainability
+- `instructions` (Critical): 2-8 short imperative disposal steps (no scanning tips)
+
+Not in v0.1 contract:
+- `followup`, `questions` (quiz is a separate UI flow)
+- `bin_type`, `disposal_method`, `category_id` (Android routes by `final.recyclable` + keywords/prefix in `final.category`)
 
 #### 4.3.2 `data.decision` (Tier-2 usage transparency)
 ```json
@@ -175,25 +184,25 @@ Field semantics:
   "reason_codes": ["LOW_CONFIDENCE", "LOW_MARGIN"],
   "thresholds": {
     "conf_threshold": 0.70,
-    "margin_threshold": 0.12
+    "margin_threshold": 0.05,
+    "conf_threshold_plastic": 0.80,
+    "conf_threshold_glass": 0.80
   }
 }
 ```
 
-#### 4.3.3 `data.followup` (uncertainty handling)
-```json
-{
-  "needs_confirmation": true,
-  "questions": [
-    {
-      "id": "q1",
-      "type": "single_choice",
-      "question": "Is there food residue?",
-      "options": ["Yes","No","Not sure"]
-    }
-  ]
-}
-```
+#### 4.3.3 No followup/quiz in v0.1
+To keep Android integration simple and avoid UI churn, v0.1 does **not** return:
+- `data.followup`
+- any `questions` / quiz fields anywhere in the response body (including `meta`)
+
+If the system is uncertain, it should still return HTTP 200 with a valid `data.final`
+where `category="Uncertain"` and `instructions` provide conservative disposal guidance
+(default: general waste) plus safety notes (battery/electronics => e-waste).
+
+Instruction content policy (v0.1):
+- `instruction` / `instructions` MUST be disposal steps only.
+- Do NOT include camera/scanning tips (lighting/framing/rescan prompts) in these fields.
 
 #### 4.3.4 `data.tier1` (echoed for parity/debug)
 ```json
@@ -213,8 +222,10 @@ Field semantics:
 ```json
 {
   "schema_version": "0.1",
-  "model_versions": {"tier1":"onnx_v1.0.0","tier2":"llm_v0.1.0"},
-  "latency_ms": {"total": 2650, "tier2": 1900}
+  "latency_ms": {"total": 2650},
+  "tier2_provider_attempted": "openai",
+  "tier2_provider_used": "openai",
+  "tier2_provider": "openai"
 }
 ```
 
@@ -242,9 +253,8 @@ Recommended HTTP status codes:
 
 ### 5.2 Graceful degradation (Tier-2 failure)
 If Tier-2 times out/unavailable, prefer returning HTTP 200 with:
-- `decision.used_tier2=false`
-- `final.category="Uncertain"`
-- `followup.needs_confirmation=true` and 2-3 targeted questions
+- `final.category="Uncertain"` (and valid critical fields)
+- no followup/questions (v0.1 rule)
 
 ---
 
@@ -257,13 +267,10 @@ Tier-2 output must satisfy:
 - instruction + instructions (actionable disposal steps)
 - optional: bin_type/disposal_method
 
-If Tier-2 remains uncertain:
-- return followup questions (do NOT guess confidently)
-
 Tier-2 adapter must:
 - enforce JSON-only outputs
 - validate strict schema
-- repair/fallback to "uncertain + followup" on invalid outputs
+- repair/fallback to a safe `final` (e.g., `category="Uncertain"`) on invalid outputs
 
 ---
 
@@ -288,15 +295,15 @@ Protection (recommended):
 Recommended log fields:
 - request_id, timestamp, image_size
 - tier1.category, tier1.confidence, tier1.escalate
-- used_tier2, tier2_latency
-- final.bin_type, final.category_id
+- used_tier2, meta.tier2_provider_used, meta.tier2_error.code/http_status (if any)
+- final.category, final.recyclable, final.confidence
 - error_code (if any)
 
 Recommended metrics:
 - Tier-2 invocation rate, timeout rate
 - end-to-end latency percentiles
 - distribution of final categories
-- "uncertain + followup" rate
+- uncertainty rate (e.g., `final.category` starts with "Uncertain")
 
 Parity testing:
 - `CNN/experiments/v1_parity_self_test/`
@@ -352,33 +359,16 @@ data class Decision(
 
 data class FinalResult(
   val category: String,
-  val category_id: String? = null,
   val recyclable: Boolean,
   val confidence: Double,
   val instruction: String,
-  val instructions: List<String> = emptyList(),
-  val disposal_method: String? = null,
-  val bin_type: String? = null,
-  val rationale_tags: List<String>? = null
-)
-
-data class FollowupQuestion(
-  val id: String,
-  val type: String,
-  val question: String,
-  val options: List<String>
-)
-
-data class Followup(
-  val needs_confirmation: Boolean,
-  val questions: List<FollowupQuestion> = emptyList()
+  val instructions: List<String> = emptyList()
 )
 
 data class ScanData(
   val tier1: Tier1Result? = null,
   val decision: Decision,
   val final: FinalResult,
-  val followup: Followup? = null,
   val meta: Map<String, Any>? = null
 )
 
@@ -402,6 +392,26 @@ curl -X POST https://<host>/api/v1/scan \
   -F "timestamp=1730000000000"
 ```
 
+Force Tier-2 path (debug):
+```bash
+curl -X POST https://<host>/api/v1/scan \
+  -F "image=@test.jpg" \
+  -F 'tier1={"category":"plastic","confidence":0.91,"top3":[{"label":"plastic","p":0.91},{"label":"glass","p":0.05},{"label":"other_uncertain","p":0.02}],"escalate":false}' \
+  -F "force_cloud=true"
+```
+
+PowerShell example (use OpenAI Tier-2, then force Tier-2 via request):
+```powershell
+$env:TIER2_PROVIDER="openai"
+$env:OPENAI_API_KEY="YOUR_KEY"
+# or: $env:LLM_API_KEY="YOUR_KEY"
+
+curl.exe -X POST http://127.0.0.1:8000/api/v1/scan `
+  -F "image=@test.jpg" `
+  -F 'tier1={\"category\":\"plastic\",\"confidence\":0.91,\"top3\":[{\"label\":\"plastic\",\"p\":0.91},{\"label\":\"glass\",\"p\":0.05},{\"label\":\"other_uncertain\",\"p\":0.02}],\"escalate\":false}' `
+  -F "force_cloud=true"
+```
+
 ---
 
 ## 12) Reference Python Implementation (FastAPI)
@@ -414,7 +424,69 @@ Run locally (from repo root):
 uvicorn CNN.services.scan_service_v0_1:app --host 0.0.0.0 --port 8000
 ```
 
+Tier-2 provider switch (server-side env vars):
+- `TIER2_PROVIDER=mock|openai` (default: `mock`)
+- `OPENAI_API_KEY` (required when `TIER2_PROVIDER=openai`)
+  - For local debugging we also accept `LLM_API_KEY` as an alias.
+- `OPENAI_TIER2_MODEL` (optional, default: `gpt-5-mini`)
+- `OPENAI_REASONING_EFFORT` (optional, default: `none`) - lower latency on GPT-5
+- `OPENAI_VERBOSITY` (optional, default: `low`) - shorter outputs, lower latency
+
+Windows examples:
+```powershell
+$env:TIER2_PROVIDER = "openai"
+$env:OPENAI_API_KEY = "<your_key>"
+# optional
+$env:OPENAI_TIER2_MODEL = "gpt-5-mini"
+uvicorn CNN.services.scan_service_v0_1:app --host 0.0.0.0 --port 8000
+```
+
+```bat
+set TIER2_PROVIDER=openai
+set OPENAI_API_KEY=<your_key>
+REM optional
+set OPENAI_TIER2_MODEL=gpt-5-mini
+uvicorn CNN.services.scan_service_v0_1:app --host 0.0.0.0 --port 8000
+```
+
+Provider behavior:
+- `openai`: Tier-2 generates `data.final` directly (strict JSON schema, no followup/questions).
+- `mock`: Tier-2 uses deterministic templates.
+- If OpenAI fails/timeout/invalid JSON: automatic fallback to `mock` and append
+  `TIER2_FALLBACK_MOCK` to `data.decision.reason_codes`. `data.meta.tier2_provider`
+  indicates the provider actually used (`openai` or `mock`).
+  - For transparency, the server also returns:
+    - `data.meta.tier2_provider_attempted`
+    - `data.meta.tier2_provider_used`
+    - `data.meta.tier2_error` (compact, no secrets) when fallback happens:
+      `{http_status, code, message}`
+
 Health check:
 ```bash
 curl http://127.0.0.1:8000/health
+```
+
+Python requests example (force Tier-2 path):
+```python
+import json
+import requests
+
+url = "http://127.0.0.1:8000/api/v1/scan"
+
+tier1 = {
+  "category": "plastic",
+  "confidence": 0.91,
+  "top3": [
+    {"label": "plastic", "p": 0.91},
+    {"label": "glass", "p": 0.05},
+    {"label": "other_uncertain", "p": 0.02},
+  ],
+  "escalate": False,
+}
+
+with open("test.jpg", "rb") as f:
+  files = {"image": ("test.jpg", f, "image/jpeg")}
+  data = {"tier1": json.dumps(tier1), "force_cloud": "true"}
+  r = requests.post(url, files=files, data=data, timeout=30)
+  print(r.status_code, r.json())
 ```

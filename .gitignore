@@ -47,6 +47,9 @@ CNN/experiments/**/artifacts/
 **/mlruns/
 **/lightning_logs/
 
+# Local scratch (do not commit)
+CNN/tools/_scratch/
+
 # Ignore legacy 28cats module
 CNN/clf_28cats_taco/
 

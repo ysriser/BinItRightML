@@ -1,17 +1,23 @@
-from typing import Union
+"""FastAPI entrypoint for container/CI deployments.
 
-from fastapi import FastAPI
-app = FastAPI()
+We expose the v0.1 Scan Service contract by default so Android/Spring Boot can
+hit `/api/v1/scan` on the deployed Python service.
+
+Spec:
+- `CNN/docs/SCAN_SERVICE_SPEC_v0_1.md`
+Implementation:
+- `CNN/services/scan_service_v0_1.py`
+"""
+
+from __future__ import annotations
+
+from CNN.services.scan_service_v0_1 import app
 
 
 @app.get("/")
-def read_root():
-    return {"Hello": "World"}
+def root() -> dict[str, str]:
+    return {"status": "ok"}
 
-
-@app.get("/items/{item_id}")
-def read_item(item_id: int, q: Union[str, None] = None):
-    return {"item_id": item_id, "q": q}
 
 @app.middleware("http")
 async def add_security_headers(request, call_next):

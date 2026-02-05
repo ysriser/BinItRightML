@@ -15,7 +15,8 @@ separated to avoid config drift.
 - Training: `CNN/clf_7cats_tier1/`
 - V1 inference logic: `CNN/experiments/v1_multicrop_reject/`
 - Parity self-test: `CNN/experiments/v1_parity_self_test/`
-- Robust fine-tune: `CNN/experiments/v1_robust_finetune/`
+- Robust fine-tune: `CNN/experiments/v2_robust_finetune/`
+- Android-facing scan contract + reference server: `CNN/docs/SCAN_SERVICE_SPEC_v0_1.md` + `CNN/services/scan_service_v0_1.py`
 
 ## Parity self-test (quick check)
 ```

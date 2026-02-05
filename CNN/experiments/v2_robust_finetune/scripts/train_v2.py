@@ -1185,7 +1185,7 @@ def main() -> None:
                 f"Phase A checkpoint not found: {phase_a_ckpt}"
             )
         state = torch.load(phase_a_ckpt, map_location=device, weights_only=True)
-        model.loa e = model.state_dict()
+        model.load_state_dict(state)
         print(f"Phase A skipped. Loaded: {phase_a_ckpt}")
     else:
         print("Phase A: mixed dataset")

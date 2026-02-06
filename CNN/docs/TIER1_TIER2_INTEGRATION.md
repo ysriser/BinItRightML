@@ -22,7 +22,7 @@ For the stable Android/Spring Boot API contract, see:
 ### Tier-2 (slow, expensive, higher accuracy on tricky items)
 - Only called when Tier-1 is uncertain (`escalate=true`) or returns `other_uncertain`.
 - Runs on server (Spring Boot calls a Python service or a cloud model).
-- Returns refined category + dismantling instructions / follow-up questions.
+- Returns refined category + actionable disposal instructions (no quiz/follow-up in v0.1).
 
 ### Source of truth for preprocessing and thresholds
 - Model files (Tier-1):
@@ -253,18 +253,25 @@ Example `tier1_top3`:
 ### Recommended Tier-2 response (server -> app)
 Tier-2 should return:
 - final category (may be one of Tier-1 labels or a more detailed subtype)
-- `instructions` (step-by-step dismantling/disposal)
-- `needs_confirmation` + optional follow-up questions (if still uncertain)
+- `instruction` + `instructions` (step-by-step dismantling/disposal)
+- `recyclable` boolean (blue-bin flow)
+- `confidence` (0-1)
 
-We can align this with the app UX later, but keep it stable:
+v0.1 policy:
+- Do NOT return quiz/follow-up questions in the response body.
+- If uncertain, return `category="Uncertain"` and provide conservative disposal steps (general waste) + safety note (battery/e-waste).
+
+Example (Tier-2 output fields, not the full scan envelope):
 ```json
 {
-  "category": "other_uncertain",
-  "confidence": 0.72,
-  "instructions": ["Separate plastic lid and paper tube.", "Rinse if needed.", "Dispose accordingly."],
-  "needs_confirmation": true,
-  "followup_questions": [
-    {"id":"q1","type":"single_choice","question":"Is there a battery inside?", "options":["Yes","No","Not sure"]}
+  "category": "PET Plastic Bottle",
+  "recyclable": true,
+  "confidence": 0.93,
+  "instruction": "Empty and rinse before recycling.",
+  "instructions": [
+    "Empty all contents.",
+    "Rinse to remove residue.",
+    "Remove caps if possible."
   ]
 }
 ```

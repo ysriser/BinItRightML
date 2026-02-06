@@ -388,42 +388,41 @@ async def _openai_scan_final(
     model = os.getenv("OPENAI_TIER2_MODEL", "gpt-5-mini")
     is_gpt5 = "gpt-5" in model.lower()
     # GPT-5 knobs (for lower latency). Other models may reject unknown fields.
-    reasoning_effort = os.getenv("OPENAI_REASONING_EFFORT", "none")
+    reasoning_effort = os.getenv("OPENAI_REASONING_EFFORT", "minimal")
     verbosity = os.getenv("OPENAI_VERBOSITY", "low")
 
     image_url = _image_to_data_url(img)
     tier1_json = json.dumps(tier1, ensure_ascii=False)
 
     developer_msg = (
-        "You are a recycling disposal expert. Given ONE photo of a waste item (Singapore context, "
-        "but do not cite specific shop names or addresses), output ONLY a JSON object that matches "
-        "the provided schema. No extra text. Keep it short and precise, return will fail if exceeds 2.5 secs. try to answer in 1 sec. Do not think.\n\n"
-        "Rules:\n"
-        "1) Do NOT ask the user questions. ANSWER IN ENGLISH!!!\n"
-        "2) category:\n"
-        "   - If it is e-waste (electronics, battery, cables, chargers, small devices), category MUST "
-        "start with 'E-waste - '.\n"
-        "   - If it is textile/fabric/clothing, category MUST start with 'Textile - '.\n"
-        "   - Otherwise use a short refined name (e.g., 'PET Plastic Bottle', 'Glass Container', "
-        "'Oily Pizza Box'， 'A Heytea cup with straw').\n"
-        "3) recyclable:\n"
-        "   - true ONLY for normal recycling bin flow (clean, dry, single-material recyclable).\n"
-        "   - false for e-waste, textile, contaminated paper, heavily food-stained items, unknown items.\n"
-        "4) instructions:\n"
-        "   - Provide actionable steps (2-5). Use imperative steps.\n"
-        "   - If multiple parts exist, include guidance for each part.\n"
-        "   - If special drop-off is needed, say generic 'bring to an e-waste recycling point'.\n"
-        "   - 如果是复合材质或者物件，比如含食物的塑料饭盒或者还有液体与习惯的塑料饮料瓶之类，或者还可能有电池的电器等的\n"
-        "   - 您都可以一定专业且准确的说明，比如xxx倒掉清洗后，xxx部分丢xxx垃圾桶，xxx可回收垃圾桶。或者说电池还有电就重复利用，电器可以到HDB的xxx废品回收点或者啥的去回收或者。\n"
-         "5) confidence:\n"
-        "   - 0.85-0.99 when very clear; 0.55-0.80 when somewhat clear. If it is an item u can identify even it is a human, the confidence is high.\n"
-        "   - <=0.54 when uncertain: set category to 'Uncertain', recyclable=false, and provide\n"
-        "     conservative disposal guidance (general waste) with safety notes for batteries/e-waste."
-        "写在最后：如果你不确定，你就说Uncertain或者说并非垃圾分类，而不是编造一个错误的分类。"
-        "因为我们是一个垃圾分类的应用程序，用户拍照识别是一个feature，我们已经有一个tier1的模型做本地识别了，你是tier2的专家识别那些tier1不确定的图片。"
-        "所以这些图片可能是乱拍的或者恶搞的。如果拍的太偏门或者对焦不对，您就说识别不对建议重拍。如果是乱拍的就说识别不出建议然后给一些泛泛的instruction。如果是恶搞（比如完全就是为了拍人或者拍了飞机啥的），你可以适当的幽默，但是不要冒犯。"
-    )
-    user_msg = (
+    "You are a recycling disposal expert. Given ONE photo of a waste item (Singapore context, "
+    "do not cite specific shop names or addresses), output ONLY a JSON object that matches the "
+    "provided schema. No extra text. Keep it short and precise.\n\n"
+    "Rules:\n"
+    "1) Do NOT ask the user questions. Do NOT output quiz or follow-up questions.\n"
+    "2) category:\n"
+    "   - If it is e-waste (electronics, battery, cables, chargers, small devices), category MUST "
+    "start with 'E-waste - '.\n"
+    "   - If it is textile/fabric/clothing, category MUST start with 'Textile - '.\n"
+    "   - Otherwise use a short refined name (for example: 'PET Plastic Bottle', 'Glass Container', "
+    "'Oily Pizza Box', 'Takeaway Drink Cup with Straw').\n"
+    "3) recyclable:\n"
+    "   - true ONLY for normal recycling bin flow (clean, dry, single-material recyclable).\n"
+    "   - false for e-waste, textile, contaminated paper, heavily food-stained items, or unknown items.\n"
+    "4) instructions:\n"
+    "   - Provide actionable disposal steps (2-5), imperative style.\n"
+    "   - If multiple parts exist, include disposal guidance for each part.\n"
+    "   - For mixed items, clearly explain cleaning/dismantling and where each part goes.\n"
+    "   - If special drop-off is needed, say generic 'bring to an e-waste recycling point'.\n"
+    "5) confidence:\n"
+    "   - 0.85-0.99 when very clear; 0.55-0.80 when somewhat clear.\n"
+    "   - <=0.54 when uncertain: set category to 'Uncertain', recyclable=false, and provide "
+    "conservative disposal guidance (general waste) with safety notes for batteries/e-waste.\n"
+    "6) Never invent a confident wrong class. If not sure, return 'Uncertain'.\n"
+    "7) Off-topic/fake photos are possible. If image is not a real waste item, return 'Uncertain' "
+    "with safe generic disposal guidance."
+)
+user_msg = (
         "Return the final scan result JSON.\n"
         f"Tier-1 context (may be wrong): {tier1_json}"
     )
@@ -808,3 +807,4 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(app, host="0.0.0.0", port=8000)
+

@@ -9,7 +9,7 @@ if not OPENAI_API_KEY:
     raise SystemExit("Missing OPENAI_API_KEY (or LLM_API_KEY) in environment variables.")
 
 # Choose a model you want to test. If you keep getting 404, it is often 'model not found / no access'.
-MODEL = os.getenv("OPENAI_TIER2_MODEL", "gpt-4o-mini")
+MODEL = os.getenv("OPENAI_TIER2_MODEL", "gpt-5-mini")
 reasoning_effort = os.getenv("OPENAI_REASONING_EFFORT", "minimal")
 verbosity = os.getenv("OPENAI_VERBOSITY", "low")
 

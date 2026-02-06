@@ -38,10 +38,9 @@ Thumbs.db
 
 # Project outputs / data
 CNN/data/
-CNN/outputs/
 CNN/artifacts/
 CNN/runs/
-CNN/experiments/**/outputs/
+CNN/experiments/**/
 CNN/experiments/**/artifacts/
 **/wandb/
 **/mlruns/

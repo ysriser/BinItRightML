@@ -56,8 +56,9 @@ jobs:
             docker stop python-app-test || true
             docker rm python-app-test || true
 
-            # Host 8000 -> Container 80 (As per your working production config)
-            docker run -d --name python-app-test -p 8000:8000 $PYTHON_IMAGE
+            # Change -p 8000:8000 to -p 127.0.0.1:8000:8000
+            docker run -d --name python-app-test -p 127.0.0.1:8000:8000 $PYTHON_IMAGE
+
             echo "Waiting for container to pass internal health check..."
             timeout 120s bash -c 'until curl -s http://localhost:8000/docs > /dev/null; do sleep 5; done'
 
@@ -84,7 +85,7 @@ jobs:
       - name: Run Locust
         run: |
           locust -f locustfile.py --headless -u 10 -r 5 --run-time 1m \
-            --host http://${{ secrets.TEST_IP }}:8000 --html report.html
+            --host https://${{ secrets.TEST_URL }}:8000 --html report.html
       - name: Upload Load Test Report
         if: always()
         uses: actions/upload-artifact@v4
@@ -101,13 +102,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Wait for App
-        run: timeout 300s bash -c 'until curl -sSf http://${{ secrets.TEST_IP }}:8000/docs > /dev/null; do echo "Waiting..."; sleep 5; done'
+        run: timeout 300s bash -c 'until curl -sSf https://${{ secrets.TEST_URL }}:8000/docs > /dev/null; do echo "Waiting..."; sleep 5; done'
 
       - name: OWASP ZAP API Scan
         uses: zaproxy/action-api-scan@v0.10.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          target: "http://${{ secrets.TEST_IP }}:8000/openapi.json"
+          target: "https://${{ secrets.TEST_URL }}:8000/openapi.json"
           format: openapi
           fail_action: true
           allow_issue_writing: false

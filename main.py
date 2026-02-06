@@ -3,7 +3,7 @@ import pickle
 from fastapi import FastAPI
 from typing import Union
 
-app = FastAPI()
+app = FastAPI(root_path="/python")
 
 # 1. Resolve the path immediately
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))

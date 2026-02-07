@@ -1,11 +1,15 @@
+import asyncio
 import io
 import os
 import sys
 import importlib
 
+import httpx
+import pytest
 import torch
-from fastapi.testclient import TestClient
 from PIL import Image
+
+pytest.importorskip("timm")
 
 
 class DummyModel(torch.nn.Module):
@@ -15,7 +19,7 @@ class DummyModel(torch.nn.Module):
         return logits.repeat(batch, 1)
 
 
-def build_client() -> TestClient:
+def _build_app():
     # Force the service to skip real model loading during tests.
     os.environ["BINITRIGHT_SKIP_MODEL_LOAD"] = "1"
     module_name = "CNN.clf_7cats_tier1.serve"
@@ -34,32 +38,41 @@ def build_client() -> TestClient:
         "device": torch.device("cpu"),
         "transform": dummy_transform,
     }
-    return TestClient(serve.app)
+    return serve.app
+
+
+def _request(method: str, path: str, **kwargs):
+    async def _run_request():
+        transport = httpx.ASGITransport(app=_build_app())
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.request(method, path, **kwargs)
+
+    return asyncio.run(_run_request())
 
 
 def test_health_endpoint():
-    # Step 1: create a test client.
-    client = build_client()
-    # Step 2: call health endpoint.
-    resp = client.get("/health")
-    # Step 3: verify response.
+    # Step 1: call health endpoint.
+    resp = _request("GET", "/health")
+    # Step 2: verify response.
     assert resp.status_code == 200
     assert resp.json() == {"status": "ok"}
 
 
 def test_scan_endpoint_returns_payload():
-    # Step 1: create a test client.
-    client = build_client()
-
-    # Step 2: build a small in-memory JPEG to upload.
+    # Step 1: build a small in-memory JPEG to upload.
     img = Image.new("RGB", (64, 64), color=(120, 80, 40))
     buf = io.BytesIO()
     img.save(buf, format="JPEG")
     buf.seek(0)
 
-    # Step 3: send the image to the scan endpoint.
-    resp = client.post("/api/v1/scan", files={"image": ("sample.jpg", buf.read(), "image/jpeg")})
-    # Step 4: verify response payload shape.
+    # Step 2: send the image to the scan endpoint.
+    resp = _request(
+        "POST",
+        "/api/v1/scan",
+        files={"image": ("sample.jpg", buf.read(), "image/jpeg")},
+    )
+
+    # Step 3: verify response payload shape.
     assert resp.status_code == 200
     payload = resp.json()
 

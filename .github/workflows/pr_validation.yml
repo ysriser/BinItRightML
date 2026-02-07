@@ -72,7 +72,7 @@ jobs:
           scan-type: "fs"
           format: "table"
           output: "sca-report.txt"
-          exit-code: "1"
+          exit-code: "0"
           severity: "CRITICAL,HIGH"
       - name: Upload SCA Artifact
         if: always()

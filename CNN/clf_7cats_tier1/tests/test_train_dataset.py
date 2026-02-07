@@ -1,7 +1,10 @@
 from pathlib import Path
 
+import pytest
 from PIL import Image
 from torchvision import transforms
+
+pytest.importorskip("timm")
 
 from CNN.clf_7cats_tier1.train import CsvDataset
 

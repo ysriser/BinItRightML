@@ -19,9 +19,10 @@ jobs:
           python-version: "3.11"
       - name: Run Ruff
         run: |
+          python -m pip install --upgrade pip
           pip install ruff
-          # Output to a file for artifact storage
-          ruff check . > lint-report.txt || true
+          set -o pipefail
+          ruff check . | tee lint-report.txt
       - name: Upload Lint Artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -44,10 +45,12 @@ jobs:
           cache: "pip"
       - name: Install Dependencies
         run: |
-          pip install pytest
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
       - name: Run Pytest
-        run: pytest --junitxml=reports/unit-test.xml || [ $? -eq 5 ]
+        run: |
+          mkdir -p reports
+          pytest test_main.py CNN/shared/tests CNN/clf_7cats_tier1/tests CNN/services/tests --junitxml=reports/unit-test.xml
       - name: Upload Unit Test Reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -97,6 +100,67 @@ jobs:
           name: python-sast-results
           path: bandit-results.json
 
+  security-report:
+    name: Security Testing Report
+    needs: [sca-scan, sast-scan]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download SCA Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: python-sca-results
+          path: reports/security
+      - name: Download SAST Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: python-sast-results
+          path: reports/security
+      - name: Build Security Summary
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          out = Path('reports/security/security-testing-report.md')
+          out.parent.mkdir(parents=True, exist_ok=True)
+
+          sca_path = Path('reports/security/sca-report.txt')
+          sast_path = Path('reports/security/bandit-results.json')
+
+          sca_high_critical = 0
+          if sca_path.exists():
+            text = sca_path.read_text(encoding='utf-8', errors='ignore')
+            sca_high_critical = sum(1 for line in text.splitlines() if 'HIGH' in line or 'CRITICAL' in line)
+
+          sast_count = 0
+          if sast_path.exists():
+            try:
+              data = json.loads(sast_path.read_text(encoding='utf-8'))
+              sast_count = len(data.get('results', []))
+            except Exception:
+              pass
+
+          out.write_text(
+            "# Security Testing Report (PR)\n\n"
+            "## Identified Issues\n"
+            f"- SCA potential HIGH/CRITICAL lines: {sca_high_critical}\n"
+            f"- SAST findings count (Bandit): {sast_count}\n\n"
+            "## Fixes Applied\n"
+            "- Track fixes in PR commits and code review notes.\n"
+            "- Keep this report artifact with each PR run.\n\n"
+            "## Re-scanning Results\n"
+            "- Re-run this workflow after fixes and compare this report with previous run artifacts.\n",
+            encoding='utf-8'
+          )
+          PY
+      - name: Upload Security Testing Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-security-testing-report
+          path: reports/security/security-testing-report.md
+          
   # ==========================================
   # BOX 4: PYTHON BUILD (Verification)
   # ==========================================
@@ -116,13 +180,9 @@ jobs:
           pip install wheel setuptools
           pip install -r requirements.txt
       - name: Verify Environment (Dry Run)
-        run: |
-          # This ensures the app can at least be 'imported' or 
-          # that the entry point script is valid.
-          python -m compileall .
+        run: python -m compileall .
       - name: Create Build Archive
-        run: |
-          zip -r python-app-pr.zip . -x "*.git*" "venv/*" "__pycache__/*"
+        run: zip -r python-app-pr.zip . -x "*.git*" "venv/*" "__pycache__/*"
       - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
         with:

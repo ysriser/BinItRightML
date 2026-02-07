@@ -1,29 +1,42 @@
-"""FastAPI entrypoint for container/CI deployments.
+import os
+import pickle
+from fastapi import FastAPI
+from typing import Union
 
-We expose the v0.1 Scan Service contract by default so Android/Spring Boot can
-hit `/api/v1/scan` on the deployed Python service.
+app = FastAPI(root_path="/python")
 
-Spec:
-- `CNN/docs/SCAN_SERVICE_SPEC_v0_1.md`
-Implementation:
-- `CNN/services/scan_service_v0_1.py`
-"""
+# 1. Resolve the path immediately
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+pkl_path = os.path.join(BASE_DIR, "forecasts1.pkl")
 
-from __future__ import annotations
+# 2. Load the data at the TOP LEVEL (No more startup event needed)
+print(f"--- Attempting to load: {pkl_path} ---")
+try:
+    with open(pkl_path, "rb") as f:
+        BEST_FORECASTS = pickle.load(f)
+    print("--- SUCCESS: Forecasts loaded ---")
+except Exception as e:
+    print(f"--- ERROR: {e} ---")
+    BEST_FORECASTS = {}
 
-from CNN.services.scan_service_v0_1 import app
+# 3. Your endpoints remain the same
+@app.get("/forecast")
+def get_final_forecast():
+    # If the dictionary is empty, it returns the error you saw in curl
+    if not BEST_FORECASTS:
+        return {"error": "Forecast data not available"}
 
+    years = list(range(2025, 2031))
+    response = {
+        "forecasts": {},
+        "calculated_total_generated_tonnes": round(
+            BEST_FORECASTS.get("Total_tonnes", 0), 2
+        )
+    }
 
-@app.get("/")
-def root() -> dict[str, str]:
-    return {"status": "ok"}
+    for model in ["ARIMA", "WMA", "SES"]:
+        response["forecasts"][model] = dict(
+            zip(years, map(int, BEST_FORECASTS.get(model, [])))
+        )
 
-
-@app.middleware("http")
-async def add_security_headers(request, call_next):
-    response = await call_next(request)
-    # Fix for Alert 10021
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    # Fix for Alert 90004
-    response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
     return response

@@ -1,0 +1,210 @@
+name: Python Master Deployment
+
+on:
+  push:
+    branches: ["master"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ==========================================
+  # BOX 4 & 5: BUILD & DOCKERIZATION
+  # ==========================================
+  docker-push:
+    name: Docker Build & Push
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Login to DigitalOcean
+        uses: docker/login-action@v3
+        with:
+          registry: registry.digitalocean.com
+          username: _
+          password: ${{ secrets.DO_ACCESS_TOKEN }}
+      - name: Build and Push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            registry.digitalocean.com/binitright/python-ml-app:${{ github.sha }}
+            registry.digitalocean.com/binitright/python-ml-app:master
+
+  # ==========================================
+  # BOX 6: DEPLOY TO TEST
+  # ==========================================
+  deploy-test:
+    name: Deploy to Test
+    needs: docker-push
+    runs-on: ubuntu-latest
+    environment: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: SSH Deploy to Test
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.TEST_IP }}
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            export PYTHON_IMAGE=registry.digitalocean.com/binitright/python-ml-app:${{ github.sha }}
+            docker login -u _ -p ${{ secrets.DO_ACCESS_TOKEN }} registry.digitalocean.com
+            docker image prune -f
+            docker pull $PYTHON_IMAGE
+            docker stop python-app-test || true
+            docker rm python-app-test || true
+
+            # Host 8000 -> Container 80 (As per your working production config)
+            docker run -d --name python-app-test -p 8000:8000 $PYTHON_IMAGE
+            echo "Waiting for container to pass internal health check..."
+            timeout 120s bash -c 'until curl -s http://localhost:8000/docs > /dev/null; do sleep 5; done'
+
+            docker image prune -f
+            docker image prune -a -f --filter "until=1h"
+            sleep 45
+
+  # ==========================================
+  # BOX 7A: PERFORMANCE TEST (LOCUST)
+  # ==========================================
+  load-test:
+    name: Locust Load Test
+    needs: deploy-test
+    if: always() # Run performance even if DAST only found Low/Info issues
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Locust
+        run: pip install locust
+      - name: Run Locust
+        run: |
+          locust -f locustfile.py --headless -u 10 -r 5 --run-time 1m \
+            --host http://${{ secrets.TEST_IP }}:8000 --html report.html
+      - name: Upload Load Test Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-load-test-report
+          path: report.html
+
+  # ==========================================
+  # BOX 7B: DAST SECURITY SCAN (BLOCKING MED/HIGH)
+  # ==========================================
+  dast-scan:
+    name: DAST Security Scan
+    needs: load-test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for App
+        run: timeout 300s bash -c 'until curl -sSf http://${{ secrets.TEST_IP }}:8000/docs > /dev/null; do echo "Waiting..."; sleep 5; done'
+
+      - name: OWASP ZAP API Scan
+        uses: zaproxy/action-api-scan@v0.10.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          target: "http://${{ secrets.TEST_IP }}:8000/openapi.json"
+          format: openapi
+          fail_action: true
+          allow_issue_writing: false
+          cmd_options: "-I" # Only fail on Medium/High risks
+
+      - name: Upload DAST Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-zap-report
+          path: |
+            report_html.html
+            report_json.json
+
+  # ==========================================
+  # BOX 8: PRODUCTION RELEASE & VERSION TAGGING
+  # ==========================================
+  deploy-production:
+    name: Production Release
+    needs: [dast-scan, load-test]
+    runs-on: ubuntu-latest
+    environment: production # THE GATE: Pauses for approval
+    permissions:
+      contents: write # Authority to push Git tags
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 1. CALCULATE VERSION (Manual Base for Python App)
+      - name: Calculate Next Version
+        id: vars
+        run: |
+          # Change this BASE to "v1.1." or "v2.0." when you have a major ML update
+          BASE="v1.0."
+
+          git fetch --tags
+          # Look for tags starting with our Python prefix
+          LATEST_TAG=$(git tag -l "${BASE}*" | sort -V | tail -n 1)
+
+          if [ -z "$LATEST_TAG" ]; then
+              NEXT_NUM=1
+          else
+              VERSION_NUM=${LATEST_TAG#$BASE}
+              NEXT_NUM=$((VERSION_NUM + 1))
+          fi
+
+          NEW_TAG="${BASE}${NEXT_NUM}"
+          echo "NEW_TAG=$NEW_TAG" >> $GITHUB_ENV
+          echo "Calculated Python Version: $NEW_TAG"
+
+      # 2. DOCKER TAGGING
+      - name: Login to DigitalOcean
+        uses: docker/login-action@v3
+        with:
+          registry: registry.digitalocean.com
+          username: _
+          password: ${{ secrets.DO_ACCESS_TOKEN }}
+
+      - name: Tag and Push Docker Image
+        run: |
+          docker pull registry.digitalocean.com/binitright/python-ml-app:${{ github.sha }}
+          docker tag registry.digitalocean.com/binitright/python-ml-app:${{ github.sha }} \
+                      registry.digitalocean.com/binitright/python-ml-app:${{ env.NEW_TAG }}
+          docker push registry.digitalocean.com/binitright/python-ml-app:${{ env.NEW_TAG }}
+
+      # 3. SSH DEPLOY
+      - name: SSH Deploy Production
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.PROD_IP }}
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            docker login -u _ -p ${{ secrets.DO_ACCESS_TOKEN }} registry.digitalocean.com
+            docker image prune -f
+
+            # Pull the specific new version
+            docker pull registry.digitalocean.com/binitright/python-ml-app:${{ env.NEW_TAG }}
+
+            docker stop python-app-prod || true
+            docker rm python-app-prod || true
+
+            # Using the unique version tag for the run command
+            docker run -d \
+              --name python-app-prod \
+              --restart always \
+              -p 8000:8000 \
+              registry.digitalocean.com/binitright/python-ml-app:${{ env.NEW_TAG }}
+
+            docker image prune -f
+            docker image prune -a -f --filter "until=1h"
+
+      # 4. GIT TAGGING (The Final Seal)
+      - name: Push Git Tag
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git tag ${{ env.NEW_TAG }}
+          git push origin ${{ env.NEW_TAG }}

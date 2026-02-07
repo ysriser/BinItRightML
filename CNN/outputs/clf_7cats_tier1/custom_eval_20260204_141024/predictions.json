@@ -1,0 +1,302 @@
+[
+  {
+    "filepath": "CNN\\data\\G3_SGData\\e-waste\\ewaste_001.jpg",
+    "true_label": "e-waste",
+    "pred_label": "e-waste",
+    "pred_conf": 0.9406081438064575,
+    "topk": [
+      {
+        "label": "e-waste",
+        "p": 0.9406081438064575
+      },
+      {
+        "label": "other_uncertain",
+        "p": 0.01615033857524395
+      },
+      {
+        "label": "paper",
+        "p": 0.013350714929401875
+      }
+    ]
+  },
+  {
+    "filepath": "CNN\\data\\G3_SGData\\glass\\glass_001.HEIC",
+    "true_label": "glass",
+    "pred_label": "glass",
+    "pred_conf": 0.920779824256897,
+    "topk": [
+      {
+        "label": "glass",
+        "p": 0.920779824256897
+      },
+      {
+        "label": "other_uncertain",
+        "p": 0.051936376839876175
+      },
+      {
+        "label": "paper",
+        "p": 0.013709827326238155
+      }
+    ]
+  },
+  {
+    "filepath": "CNN\\data\\G3_SGData\\metal\\metal_001.jpg",
+    "true_label": "metal",
+    "pred_label": "metal",
+    "pred_conf": 0.9291075468063354,
+    "topk": [
+      {
+        "label": "metal",
+        "p": 0.9291075468063354
+      },
+      {
+        "label": "e-waste",
+        "p": 0.02229321002960205
+      },
+      {
+        "label": "other_uncertain",
+        "p": 0.01567223109304905
+      }
+    ]
+  },
+  {
+    "filepath": "CNN\\data\\G3_SGData\\metal\\metal_002.HEIC",
+    "true_label": "metal",
+    "pred_label": "metal",
+    "pred_conf": 0.9551715850830078,
+    "topk": [
+      {
+        "label": "metal",
+        "p": 0.9551715850830078
+      },
+      {
+        "label": "other_uncertain",
+        "p": 0.01659044809639454
+      },
+      {
+        "label": "glass",
+        "p": 0.011489988304674625
+      }
+    ]
+  },
+  {
+    "filepath": "CNN\\data\\G3_SGData\\other_uncertain\\uncertain_001.HEIC",
+    "true_label": "other_uncertain",
+    "pred_label": "glass",
+    "pred_conf": 0.8724710941314697,
+    "topk": [
+      {
+        "label": "glass",
+        "p": 0.8724710941314697
+      },
+      {
+        "label": "other_uncertain",
+        "p": 0.06861657649278641
+      },
+      {
+        "label": "e-waste",
+        "p": 0.022425802424550056
+      }
+    ]
+  },
+  {
+    "filepath": "CNN\\data\\G3_SGData\\other_uncertain\\uncertain_003.jpg",
+    "true_label": "other_uncertain",
+    "pred_label": "other_uncertain",
+    "pred_conf": 0.9194527864456177,
+    "topk": [
+      {
+        "label": "other_uncertain",
+        "p": 0.9194527864456177
+      },
+      {
+        "label": "paper",
+        "p": 0.03036263957619667
+      },
+      {
+        "label": "glass",
+        "p": 0.013231320306658745
+      }
+    ]
+  },
+  {
+    "filepath": "CNN\\data\\G3_SGData\\paper\\paper_001.HEIC",
+    "true_label": "paper",
+    "pred_label": "paper",
+    "pred_conf": 0.9375877380371094,
+    "topk": [
+      {
+        "label": "paper",
+        "p": 0.9375877380371094
+      },
+      {
+        "label": "other_uncertain",
+        "p": 0.022871481254696846
+      },
+      {
+        "label": "metal",
+        "p": 0.01556681003421545
+      }
+    ]
+  },
+  {
+    "filepath": "CNN\\data\\G3_SGData\\paper\\paper_002.HEIC",
+    "true_label": "paper",
+    "pred_label": "textile",
+    "pred_conf": 0.4605633020401001,
+    "topk": [
+      {
+        "label": "textile",
+        "p": 0.4605633020401001
+      },
+      {
+        "label": "paper",
+        "p": 0.4439644515514374
+      },
+      {
+        "label": "other_uncertain",
+        "p": 0.05588894709944725
+      }
+    ]
+  },
+  {
+    "filepath": "CNN\\data\\G3_SGData\\paper\\paper_003.HEIC",
+    "true_label": "paper",
+    "pred_label": "paper",
+    "pred_conf": 0.8913018107414246,
+    "topk": [
+      {
+        "label": "paper",
+        "p": 0.8913018107414246
+      },
+      {
+        "label": "glass",
+        "p": 0.029508598148822784
+      },
+      {
+        "label": "metal",
+        "p": 0.026891043409705162
+      }
+    ]
+  },
+  {
+    "filepath": "CNN\\data\\G3_SGData\\plastic\\plastic_001.jpg",
+    "true_label": "plastic",
+    "pred_label": "paper",
+    "pred_conf": 0.9402527809143066,
+    "topk": [
+      {
+        "label": "paper",
+        "p": 0.9402527809143066
+      },
+      {
+        "label": "other_uncertain",
+        "p": 0.014902048744261265
+      },
+      {
+        "label": "plastic",
+        "p": 0.014861267991364002
+      }
+    ]
+  },
+  {
+    "filepath": "CNN\\data\\G3_SGData\\plastic\\plastic_002.HEIC",
+    "true_label": "plastic",
+    "pred_label": "other_uncertain",
+    "pred_conf": 0.5702786445617676,
+    "topk": [
+      {
+        "label": "other_uncertain",
+        "p": 0.5702786445617676
+      },
+      {
+        "label": "plastic",
+        "p": 0.21145260334014893
+      },
+      {
+        "label": "metal",
+        "p": 0.11755578219890594
+      }
+    ]
+  },
+  {
+    "filepath": "CNN\\data\\G3_SGData\\plastic\\plastic_003.jpg",
+    "true_label": "plastic",
+    "pred_label": "other_uncertain",
+    "pred_conf": 0.7992786169052124,
+    "topk": [
+      {
+        "label": "other_uncertain",
+        "p": 0.7992786169052124
+      },
+      {
+        "label": "plastic",
+        "p": 0.07204855978488922
+      },
+      {
+        "label": "metal",
+        "p": 0.04446471109986305
+      }
+    ]
+  },
+  {
+    "filepath": "CNN\\data\\G3_SGData\\plastic\\plastic_004.jpg",
+    "true_label": "plastic",
+    "pred_label": "plastic",
+    "pred_conf": 0.6059091091156006,
+    "topk": [
+      {
+        "label": "plastic",
+        "p": 0.6059091091156006
+      },
+      {
+        "label": "other_uncertain",
+        "p": 0.22325338423252106
+      },
+      {
+        "label": "metal",
+        "p": 0.07543027400970459
+      }
+    ]
+  },
+  {
+    "filepath": "CNN\\data\\G3_SGData\\plastic\\plastic_005.HEIC",
+    "true_label": "plastic",
+    "pred_label": "other_uncertain",
+    "pred_conf": 0.9165260195732117,
+    "topk": [
+      {
+        "label": "other_uncertain",
+        "p": 0.9165260195732117
+      },
+      {
+        "label": "plastic",
+        "p": 0.027087097987532616
+      },
+      {
+        "label": "metal",
+        "p": 0.01775757595896721
+      }
+    ]
+  },
+  {
+    "filepath": "CNN\\data\\G3_SGData\\textile\\textile_001.jpg",
+    "true_label": "textile",
+    "pred_label": "textile",
+    "pred_conf": 0.8581235408782959,
+    "topk": [
+      {
+        "label": "textile",
+        "p": 0.8581235408782959
+      },
+      {
+        "label": "paper",
+        "p": 0.07619582861661911
+      },
+      {
+        "label": "metal",
+        "p": 0.0222842488437891
+      }
+    ]
+  }
+]

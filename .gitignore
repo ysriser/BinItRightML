@@ -38,13 +38,23 @@ Thumbs.db
 
 # Project outputs / data
 CNN/data/
-CNN/outputs/
 CNN/artifacts/
 CNN/runs/
+CNN/experiments/**/
+CNN/experiments/**/artifacts/
 **/wandb/
 **/mlruns/
 **/lightning_logs/
 
-# Ignore legacy 28cats module
-CNN/classification_28cats/
+# Local scratch (do not commit)
+CNN/tools/_scratch/
 
+# Ignore legacy 28cats module
+CNN/clf_28cats_taco/
+
+# Keep data scripts/configs, ignore other data
+CNN/data/**
+!CNN/data/configs/
+!CNN/data/configs/**
+!CNN/data/scripts/
+!CNN/data/scripts/**

@@ -1,0 +1,102 @@
+[
+  {
+    "filepath": "CNN\\data\\G3_SGData\\other_uncertain\\uncertain_001.HEIC",
+    "true_label": "other_uncertain",
+    "pred_label": "glass",
+    "pred_conf": 0.8055191040039062,
+    "topk": [
+      {
+        "label": "glass",
+        "p": 0.8055191040039062
+      },
+      {
+        "label": "metal",
+        "p": 0.12394094467163086
+      },
+      {
+        "label": "plastic",
+        "p": 0.03422332927584648
+      }
+    ]
+  },
+  {
+    "filepath": "CNN\\data\\G3_SGData\\paper\\paper_002.HEIC",
+    "true_label": "paper",
+    "pred_label": "plastic",
+    "pred_conf": 0.6261643767356873,
+    "topk": [
+      {
+        "label": "plastic",
+        "p": 0.6261643767356873
+      },
+      {
+        "label": "other_uncertain",
+        "p": 0.23139257729053497
+      },
+      {
+        "label": "textile",
+        "p": 0.12241990864276886
+      }
+    ]
+  },
+  {
+    "filepath": "CNN\\data\\G3_SGData\\plastic\\plastic_001.jpg",
+    "true_label": "plastic",
+    "pred_label": "paper",
+    "pred_conf": 0.7642442584037781,
+    "topk": [
+      {
+        "label": "paper",
+        "p": 0.7642442584037781
+      },
+      {
+        "label": "plastic",
+        "p": 0.22170014679431915
+      },
+      {
+        "label": "other_uncertain",
+        "p": 0.006278771907091141
+      }
+    ]
+  },
+  {
+    "filepath": "CNN\\data\\G3_SGData\\plastic\\plastic_003.jpg",
+    "true_label": "plastic",
+    "pred_label": "paper",
+    "pred_conf": 0.6037986278533936,
+    "topk": [
+      {
+        "label": "paper",
+        "p": 0.6037986278533936
+      },
+      {
+        "label": "other_uncertain",
+        "p": 0.29815515875816345
+      },
+      {
+        "label": "plastic",
+        "p": 0.0775754302740097
+      }
+    ]
+  },
+  {
+    "filepath": "CNN\\data\\G3_SGData\\plastic\\plastic_005.HEIC",
+    "true_label": "plastic",
+    "pred_label": "other_uncertain",
+    "pred_conf": 0.6360316872596741,
+    "topk": [
+      {
+        "label": "other_uncertain",
+        "p": 0.6360316872596741
+      },
+      {
+        "label": "plastic",
+        "p": 0.35402974486351013
+      },
+      {
+        "label": "textile",
+        "p": 0.007269724737852812
+      }
+    ]
+  }
+]

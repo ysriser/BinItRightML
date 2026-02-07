@@ -1,7 +1,6 @@
 import os
 import pickle
 from fastapi import FastAPI
-from typing import Union
 
 app = FastAPI(root_path="/python")
 

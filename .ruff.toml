@@ -1,0 +1,6 @@
+line-length = 100
+exclude = [
+  "**/*.ipynb",
+  "**/__pycache__",
+  "CNN/clf_28cats_taco",
+]

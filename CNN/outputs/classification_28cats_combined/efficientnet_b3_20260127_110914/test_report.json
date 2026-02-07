@@ -1,0 +1,187 @@
+{
+  "macro_f1": 0.24627646082039512,
+  "top3_acc": 0.4509090781211853,
+  "report": {
+    "Aluminium foil": {
+      "precision": 0.14285714285714285,
+      "recall": 0.45454545454545453,
+      "f1-score": 0.21739130434782608,
+      "support": 11.0
+    },
+    "Battery": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1-score": 0.0,
+      "support": 1.0
+    },
+    "Blister pack": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1-score": 0.0,
+      "support": 2.0
+    },
+    "Bottle": {
+      "precision": 0.8166666666666667,
+      "recall": 0.310126582278481,
+      "f1-score": 0.44954128440366975,
+      "support": 158.0
+    },
+    "Bottle cap": {
+      "precision": 0.4266666666666667,
+      "recall": 0.7804878048780488,
+      "f1-score": 0.5517241379310345,
+      "support": 41.0
+    },
+    "Broken glass": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1-score": 0.0,
+      "support": 6.0
+    },
+    "Can": {
+      "precision": 0.3684210526315789,
+      "recall": 0.5283018867924528,
+      "f1-score": 0.43410852713178294,
+      "support": 53.0
+    },
+    "Carton": {
+      "precision": 0.25287356321839083,
+      "recall": 0.4888888888888889,
+      "f1-score": 0.3333333333333333,
+      "support": 45.0
+    },
+    "Cigarette": {
+      "precision": 0.45454545454545453,
+      "recall": 0.75,
+      "f1-score": 0.5660377358490566,
+      "support": 20.0
+    },
+    "Cup": {
+      "precision": 0.40298507462686567,
+      "recall": 0.6,
+      "f1-score": 0.48214285714285715,
+      "support": 45.0
+    },
+    "Food waste": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1-score": 0.0,
+      "support": 3.0
+    },
+    "Glass jar": {
+      "precision": 0.027777777777777776,
+      "recall": 0.25,
+      "f1-score": 0.05,
+      "support": 4.0
+    },
+    "Lid": {
+      "precision": 0.17073170731707318,
+      "recall": 0.30434782608695654,
+      "f1-score": 0.21875,
+      "support": 23.0
+    },
+    "Other plastic": {
+      "precision": 0.23880597014925373,
+      "recall": 0.16494845360824742,
+      "f1-score": 0.1951219512195122,
+      "support": 97.0
+    },
+    "Paper": {
+      "precision": 0.4230769230769231,
+      "recall": 0.36666666666666664,
+      "f1-score": 0.39285714285714285,
+      "support": 90.0
+    },
+    "Paper bag": {
+      "precision": 0.15384615384615385,
+      "recall": 0.2727272727272727,
+      "f1-score": 0.19672131147540983,
+      "support": 22.0
+    },
+    "Plastic bag & wrapper": {
+      "precision": 0.8095238095238095,
+      "recall": 0.07142857142857142,
+      "f1-score": 0.13127413127413126,
+      "support": 238.0
+    },
+    "Plastic container": {
+      "precision": 0.14035087719298245,
+      "recall": 0.21621621621621623,
+      "f1-score": 0.1702127659574468,
+      "support": 37.0
+    },
+    "Plastic glooves": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1-score": 0.0,
+      "support": 0.0
+    },
+    "Plastic utensils": {
+      "precision": 0.3333333333333333,
+      "recall": 0.24,
+      "f1-score": 0.27906976744186046,
+      "support": 25.0
+    },
+    "Pop tab": {
+      "precision": 0.09090909090909091,
+      "recall": 0.5,
+      "f1-score": 0.15384615384615385,
+      "support": 2.0
+    },
+    "Rope & strings": {
+      "precision": 0.6153846153846154,
+      "recall": 0.6153846153846154,
+      "f1-score": 0.6153846153846154,
+      "support": 26.0
+    },
+    "Scrap metal": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1-score": 0.0,
+      "support": 13.0
+    },
+    "Shoe": {
+      "precision": 0.2857142857142857,
+      "recall": 0.3333333333333333,
+      "f1-score": 0.3076923076923077,
+      "support": 6.0
+    },
+    "Squeezable tube": {
+      "precision": 0.043478260869565216,
+      "recall": 0.2,
+      "f1-score": 0.07142857142857142,
+      "support": 5.0
+    },
+    "Straw": {
+      "precision": 0.45,
+      "recall": 0.6206896551724138,
+      "f1-score": 0.5217391304347826,
+      "support": 29.0
+    },
+    "Styrofoam piece": {
+      "precision": 0.3469387755102041,
+      "recall": 0.5666666666666667,
+      "f1-score": 0.43037974683544306,
+      "support": 30.0
+    },
+    "Unlabeled litter": {
+      "precision": 0.13793103448275862,
+      "recall": 0.11764705882352941,
+      "f1-score": 0.12698412698412698,
+      "support": 68.0
+    },
+    "accuracy": 0.30454545454545456,
+    "macro avg": {
+      "precision": 0.25474350843930693,
+      "recall": 0.31258596262492194,
+      "f1-score": 0.24627646082039512,
+      "support": 1100.0
+    },
+    "weighted avg": {
+      "precision": 0.4836696073033274,
+      "recall": 0.30454545454545456,
+      "f1-score": 0.3005573997694218,
+      "support": 1100.0
+    }
+  }
+}

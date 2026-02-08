@@ -16,12 +16,6 @@ async def custom_404_handler(request: Request, __):
         content={"detail": "Not Found", "path": request.url.path},
     )
 
-# Fixes: Potential Host Header Injection
-app.add_middleware(
-    TrustedHostMiddleware, 
-    allowed_hosts=["test.binitright.app", "localhost"]
-)
-
 # Fixes: Security Headers (Low risk alerts in ZAP)
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):

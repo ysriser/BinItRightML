@@ -101,13 +101,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Wait for App
-        run: timeout 300s bash -c 'until curl -sSf http://${{ secrets.TEST_IP }}:8000/docs > /dev/null; do echo "Waiting..."; sleep 5; done'
+        run: timeout 300s bash -c 'until curl -sSf https://${{ secrets.TEST_URL }}:443/python/docs > /dev/null; do echo "Waiting..."; sleep 5; done'
 
       - name: OWASP ZAP API Scan
         uses: zaproxy/action-api-scan@v0.10.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          target: "http://${{ secrets.TEST_IP }}:8000/openapi.json"
+          target: "https://${{ secrets.TEST_URL }}:443/python/openapi.json"
           format: openapi
           fail_action: true
           allow_issue_writing: false

@@ -8,7 +8,7 @@ class BinItRightUser(HttpUser):
     def get_forecast(self):
         
         # This targets the actual logic that loads your pkl file
-        self.client.get("/admin/forecast")
+        self.client.get("/python/forecast")
 
     @task(1)
     def load_openapi(self):

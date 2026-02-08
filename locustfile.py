@@ -13,4 +13,4 @@ class BinItRightUser(HttpUser):
     @task(1)
     def load_openapi(self):
         """Simulates developers/tools fetching the API schema."""
-        self.client.get("/v3/api-docs")
+        self.client.get("/python/openapi.json")

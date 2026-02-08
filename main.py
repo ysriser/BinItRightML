@@ -1,8 +1,48 @@
 import os
 import pickle
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 app = FastAPI(root_path="/python")
+
+
+# Fixes: "Unexpected Content-Type" for 404s
+# Ensures that even errors are returned as JSON, not HTML
+@app.exception_handler(404)
+async def custom_404_handler(request: Request, __):
+    return JSONResponse(
+        status_code=404,
+        content={"detail": "Not Found", "path": request.url.path},
+    )
+
+# Fixes: Potential Host Header Injection
+app.add_middleware(
+    TrustedHostMiddleware, 
+    allowed_hosts=["test.binitright.app", "localhost"]
+)
+
+# Fixes: Security Headers (Low risk alerts in ZAP)
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    
+    # Fixes: "X-Content-Type-Options Header Missing"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    
+    # Fixes: "Insufficient Site Isolation Against Spectre Vulnerability"
+    response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+    
+    # Fixes: "Strict-Transport-Security Header Not Set"
+    # Tells browsers to only use HTTPS
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    
+    # Fixes: "Storable and Cacheable Content" (Informational)
+    # Prevents sensitive API data from being cached by proxies
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    
+    return response
+
 
 # 1. Resolve the path immediately
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))

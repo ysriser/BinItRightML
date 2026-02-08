@@ -7,7 +7,7 @@ import main
 
 async def _get_forecast():
     transport = httpx.ASGITransport(app=main.app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
         return await client.get("/forecast")
 
 

@@ -84,7 +84,7 @@ jobs:
       - name: Run Locust
         run: |
           locust -f locustfile.py --headless -u 10 -r 5 --run-time 1m \
-            --host http://${{ secrets.TEST_IP }}:8000 --html report.html
+            --host https://${{ secrets.TEST_URL }}:443 --html report.html
       - name: Upload Load Test Report
         if: always()
         uses: actions/upload-artifact@v4

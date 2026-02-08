@@ -6,7 +6,7 @@ class BinItRightUser(HttpUser):
 
     @task(5)
     def get_forecast(self):
-        """Simulates users hitting the ML forecast endpoint."""
+        
         # This targets the actual logic that loads your pkl file
         self.client.get("/admin/forecast")
 

@@ -1,4 +1,4 @@
-"""Robust fine-tune v2 training for Tier-1 (7-class) classifier."""
+﻿"""Robust fine-tune v2 training for Tier-1 (7-class) classifier."""
 
 from __future__ import annotations
 
@@ -224,20 +224,35 @@ class CsvDataset(Dataset):
 
 
 class ListDataset(Dataset):
-    def __init__(self, items: List[Tuple[Path, int]], transform=None) -> None:
+    def __init__(
+        self,
+        items: List[Tuple[Path, int]],
+        transform=None,
+        skip_bad_images: bool = True,
+        max_retry: int = 5,
+    ) -> None:
         self.items = items
         self.transform = transform
+        self.skip_bad_images = skip_bad_images
+        self.max_retry = max(1, max_retry)
 
     def __len__(self) -> int:
         return len(self.items)
 
     def __getitem__(self, idx: int):
-        path, label = self.items[idx]
-        with Image.open(path) as opened:
-            img = opened.convert("RGB")
-        if self.transform:
-            img = self.transform(img)
-        return img, label
+        for _ in range(self.max_retry):
+            path, label = self.items[idx]
+            try:
+                with Image.open(path) as opened:
+                    img = opened.convert("RGB")
+                if self.transform:
+                    img = self.transform(img)
+                return img, label
+            except Exception:
+                if not self.skip_bad_images:
+                    raise
+                idx = random.randint(0, len(self.items) - 1)
+        return self.__getitem__(random.randint(0, len(self.items) - 1))
 
 
 class ScaleDownPad:
@@ -471,6 +486,27 @@ def soft_target_ce(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
     log_probs = torch.log_softmax(logits, dim=1)
     return -(targets * log_probs).sum(dim=1).mean()
 
+
+class FocalCrossEntropy(nn.Module):
+    """Focal loss wrapper for multi-class classification."""
+
+    def __init__(
+        self,
+        gamma: float = 1.5,
+        label_smoothing: float = 0.0,
+    ) -> None:
+        super().__init__()
+        self.gamma = gamma
+        self.ce = nn.CrossEntropyLoss(
+            reduction="none",
+            label_smoothing=label_smoothing,
+        )
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        ce_loss = self.ce(logits, targets)
+        pt = torch.exp(-ce_loss)
+        focal_weight = (1.0 - pt) ** self.gamma
+        return (focal_weight * ce_loss).mean()
 
 def rand_bbox(width: int, height: int, lam: float) -> Tuple[int, int, int, int]:
     cut_ratio = np.sqrt(1.0 - lam)
@@ -977,8 +1013,18 @@ def main() -> None:
         float(phase_b.get("val_ratio", 0.2)),
         seed,
     )
-    domain_train_ds = ListDataset(domain_split.train, transform=train_transform_b)
-    domain_val_ds = ListDataset(domain_split.val, transform=eval_transform)
+    domain_train_ds = ListDataset(
+        domain_split.train,
+        transform=train_transform_b,
+        skip_bad_images=bool(data_cfg.get("skip_bad_images", True)),
+        max_retry=int(data_cfg.get("max_retry", 5)),
+    )
+    domain_val_ds = ListDataset(
+        domain_split.val,
+        transform=eval_transform,
+        skip_bad_images=bool(data_cfg.get("skip_bad_images", True)),
+        max_retry=int(data_cfg.get("max_retry", 5)),
+    )
     use_domain_val = bool(phase_b.get("prefer_domain_val", True)) and len(
         domain_val_ds
     ) > 0
@@ -999,9 +1045,52 @@ def main() -> None:
     )
     domain_val_loader = DataLoader(domain_val_ds, shuffle=False, **eval_loader_kwargs)
 
+    phase_a_mix_cfg = phase_a.get("domain_mix", {}) or {}
+    use_phase_a_domain_mix = (
+        bool(phase_a_mix_cfg.get("enabled", False))
+        and not phase_b_only
+        and len(domain_split.train) > 0
+    )
+    if use_phase_a_domain_mix:
+        repeat = max(1, int(phase_a_mix_cfg.get("repeat", 2)))
+        mixed_items = list(train_ds.items) + (list(domain_split.train) * repeat)
+        phase_a_train_ds = ListDataset(
+            mixed_items,
+            transform=train_transform_a,
+            skip_bad_images=bool(data_cfg.get("skip_bad_images", True)),
+            max_retry=int(data_cfg.get("max_retry", 5)),
+        )
+        mixed_weights = compute_class_weights(phase_a_train_ds.items, len(labels))
+        mixed_sample_weights = [
+            mixed_weights[label] for _, label in phase_a_train_ds.items
+        ]
+        mixed_sampler = WeightedRandomSampler(
+            mixed_sample_weights,
+            num_samples=len(mixed_sample_weights),
+            replacement=True,
+        )
+        train_loader = DataLoader(
+            phase_a_train_ds,
+            sampler=mixed_sampler,
+            **train_loader_kwargs,
+        )
+        print(
+            "Phase A domain mix enabled -> "
+            f"base={len(train_ds.items)} domain={len(domain_split.train)} repeat={repeat} "
+            f"total={len(phase_a_train_ds.items)}"
+        )
+
     loss_cfg = cfg.get("loss", {})
     label_smoothing = float(loss_cfg.get("label_smoothing", 0.05))
+    focal_cfg = loss_cfg.get("focal", {}) or {}
+    use_focal = bool(focal_cfg.get("enabled", False))
+    focal_gamma = float(focal_cfg.get("gamma", 1.5))
+
     ce_loss = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
+    focal_loss = FocalCrossEntropy(
+        gamma=focal_gamma,
+        label_smoothing=label_smoothing,
+    )
 
     mix_cfg_a = cfg.get("mixup_cutmix", {}) or {}
     mix_cfg_b = cfg.get("phase_b", {}).get("mixup_cutmix", mix_cfg_a) or {}
@@ -1010,7 +1099,8 @@ def main() -> None:
         "Augmentations -> "
         f"scale_down_pad={scale_cfg.get('enabled', True)} "
         f"mixup_p={mix_cfg_a.get('mixup_p', 0.0)} "
-        f"cutmix_p={mix_cfg_a.get('cutmix_p', 0.0)}"
+        f"cutmix_p={mix_cfg_a.get('cutmix_p', 0.0)} "
+        f"focal={use_focal} gamma={focal_gamma}"
     )
 
     optim_cfg = cfg.get("optimizer", {})
@@ -1126,7 +1216,7 @@ def main() -> None:
                 if mixed:
                     loss = soft_target_ce(logits, mixed_targets)
                 else:
-                    loss = ce_loss(logits, labels_batch)
+                    loss = focal_loss(logits, labels_batch) if use_focal else ce_loss(logits, labels_batch)
 
             if use_amp:
                 scaler.scale(loss).backward()
@@ -1592,3 +1682,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

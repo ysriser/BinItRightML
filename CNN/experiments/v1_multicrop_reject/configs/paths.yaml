@@ -1,5 +1,5 @@
 models:
-  onnx: CNN/models/tier1.onnx
+  onnx: CNN/experiments/v3_generalization_upgrade/artifacts/robust_v2_20260208_015950/model.onnx
   label_map: CNN/models/label_map.json
   infer_config: CNN/models/infer_config.json
 

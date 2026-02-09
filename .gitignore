@@ -42,6 +42,14 @@ CNN/artifacts/
 CNN/runs/
 CNN/experiments/**/
 CNN/experiments/**/artifacts/
+!CNN/experiments/v3_generalization_upgrade/
+!CNN/experiments/v3_generalization_upgrade/README.md
+!CNN/experiments/v3_generalization_upgrade/configs/
+!CNN/experiments/v3_generalization_upgrade/configs/**
+!CNN/experiments/v3_generalization_upgrade/scripts/
+!CNN/experiments/v3_generalization_upgrade/scripts/**
+CNN/experiments/v3_generalization_upgrade/outputs/
+CNN/experiments/v3_generalization_upgrade/artifacts/
 **/wandb/
 **/mlruns/
 **/lightning_logs/
@@ -58,3 +66,5 @@ CNN/data/**
 !CNN/data/configs/**
 !CNN/data/scripts/
 !CNN/data/scripts/**
+
+CNN/experiments/v3_generalization_upgrade/scripts/__pycache__/

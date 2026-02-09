@@ -11,7 +11,7 @@ python-multipart==0.0.22
 pyyaml==6.0.3
 pillow==12.1.0
 pillow-heif==0.20.0
-scikit-learn==1.8.0
+scikit-learn>=1.5.0
 matplotlib==3.10.8
 numpy==2.2.2
 tqdm==4.66.1

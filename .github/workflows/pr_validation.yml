@@ -47,11 +47,19 @@ jobs:
         run: |
           pip install pytest pytest-cov
           pip install -r requirements.txt
+          # If the CNN folder has its own specific requirements:
+          if [ -f CNN/requirements.txt ]; then pip install -r CNN/requirements.txt; fi
 
-      # Run tests with coverage
+      # Run tests from BOTH locations
       - name: Run Pytest with Coverage
         run: |
-          pytest --cov=. --cov-report=xml:coverage.xml --cov-report=html --junitxml=reports/unit-test.xml tests/ || [ $? -eq 5 ]
+          # We target both folders explicitly. 
+          # --cov=. ensures we track coverage for the whole project root.
+          pytest --cov=. \
+                  --cov-report=xml:coverage.xml \
+                  --cov-report=html \
+                  --junitxml=reports/unit-test.xml \
+                  tests/ CNN/classification_6cats_new/tests/ || [ $? -eq 5 ]
 
       - name: Upload Unit Test Reports
         if: always()
@@ -60,7 +68,6 @@ jobs:
           name: python-unit-reports
           path: reports/
 
-      # NEW: Upload coverage for aggregation
       - name: Upload Coverage Reports
         if: success()
         uses: actions/upload-artifact@v4

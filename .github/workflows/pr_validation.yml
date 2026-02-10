@@ -88,16 +88,16 @@ jobs:
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: "fs"
-          format: "table"
-          output: "sca-report.txt"
-          exit-code: "1"
+          format: "sarif" # CHANGED
+          output: "python-sca.sarif" # CHANGED
+          exit-code: "0" # Set to 0 so the orchestrator can still run even if vulns exist
           severity: "CRITICAL,HIGH"
       - name: Upload SCA Artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: python-sca-results
-          path: sca-report.txt
+          path: python-sca.sarif
 
   # ==========================================
   # BOX 4: SAST

@@ -1,0 +1,10 @@
+models:
+  onnx: CNN/experiments/v3_generalization_upgrade/artifacts/robust_v2_20260208_015950/model.onnx
+  label_map: CNN/models/label_map.json
+  infer_config: CNN/models/infer_config.json
+
+data:
+  g3_sgdata: CNN/data/G3_SGData
+
+outputs:
+  base_dir: CNN/experiments/v1_multicrop_reject/outputs

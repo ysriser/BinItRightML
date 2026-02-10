@@ -1,6 +1,6 @@
 {
-  "backbone": "efficientnet_b0",
-  "img_size": 224,
+  "backbone": "efficientnet_b3",
+  "img_size": 256,
   "mean": [
     0.485,
     0.456,
@@ -12,6 +12,11 @@
     0.225
   ],
   "topk": 3,
-  "conf_threshold": 0.75,
-  "margin_threshold": 0.15
+  "conf_threshold": 0.5,
+  "margin_threshold": 0.03,
+  "temperature": 0.75,
+  "strict_per_class": {
+    "plastic": 0.8,
+    "glass": 0.8
+  }
 }

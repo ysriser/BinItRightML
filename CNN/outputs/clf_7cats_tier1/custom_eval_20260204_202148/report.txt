@@ -1,0 +1,13 @@
+                 precision    recall  f1-score   support
+
+          paper     0.6250    0.8333    0.7143         6
+        plastic     0.8000    0.5714    0.6667         7
+          metal     1.0000    1.0000    1.0000         2
+          glass     0.6667    1.0000    0.8000         2
+other_uncertain     0.7500    0.6000    0.6667         5
+        e-waste     1.0000    1.0000    1.0000         4
+        textile     1.0000    1.0000    1.0000         3
+
+       accuracy                         0.7931        29
+      macro avg     0.8345    0.8578    0.8354        29
+   weighted avg     0.8080    0.7931    0.7892        29

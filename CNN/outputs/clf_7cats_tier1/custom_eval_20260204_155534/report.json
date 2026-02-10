@@ -1,0 +1,57 @@
+{
+  "paper": {
+    "precision": 0.5,
+    "recall": 0.3333333333333333,
+    "f1-score": 0.4,
+    "support": 3.0
+  },
+  "plastic": {
+    "precision": 1.0,
+    "recall": 0.2,
+    "f1-score": 0.3333333333333333,
+    "support": 5.0
+  },
+  "metal": {
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1-score": 1.0,
+    "support": 2.0
+  },
+  "glass": {
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1-score": 1.0,
+    "support": 1.0
+  },
+  "other_uncertain": {
+    "precision": 0.3333333333333333,
+    "recall": 0.5,
+    "f1-score": 0.4,
+    "support": 2.0
+  },
+  "e-waste": {
+    "precision": 0.3333333333333333,
+    "recall": 1.0,
+    "f1-score": 0.5,
+    "support": 1.0
+  },
+  "textile": {
+    "precision": 0.3333333333333333,
+    "recall": 1.0,
+    "f1-score": 0.5,
+    "support": 1.0
+  },
+  "accuracy": 0.5333333333333333,
+  "macro avg": {
+    "precision": 0.6428571428571429,
+    "recall": 0.719047619047619,
+    "f1-score": 0.5904761904761904,
+    "support": 15.0
+  },
+  "weighted avg": {
+    "precision": 0.7222222222222222,
+    "recall": 0.5333333333333333,
+    "f1-score": 0.5111111111111112,
+    "support": 15.0
+  }
+}

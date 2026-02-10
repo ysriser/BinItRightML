@@ -1,0 +1,32 @@
+paths:
+  baseline_model: CNN/versions/v0_classification_6cats_new/models/tier1.onnx
+  baseline_infer: CNN/versions/v0_classification_6cats_new/models/infer_config.json
+  robust_model: CNN/models/tier1.onnx
+  robust_infer: CNN/models/infer_config.json
+  label_map: CNN/models/label_map.json
+  hardset_dir: CNN/data/hardset
+  output_dir: CNN/experiments/v3_generalization_upgrade/outputs
+
+calibration:
+  enabled: true
+  split_ratio: 0.4
+  seed: 42
+  temperature_search:
+    min: 0.70
+    max: 3.00
+    step: 0.05
+
+ece:
+  bins: 15
+
+reject_sweep:
+  conf_min: 0.50
+  conf_max: 0.95
+  conf_step: 0.05
+  margin_min: 0.03
+  margin_max: 0.30
+  margin_step: 0.03
+  target_selective_acc: 0.95
+  strict_per_class:
+    plastic: 0.80
+    glass: 0.80

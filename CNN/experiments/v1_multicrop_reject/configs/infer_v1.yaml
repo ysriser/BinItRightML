@@ -1,0 +1,30 @@
+models:
+  onnx: CNN/models/tier1.onnx
+  label_map: CNN/models/label_map.json
+  infer_config: CNN/models/infer_config.json
+
+output:
+  topk: 3
+
+thresholds:
+  conf: 0.6
+  margin: 0.15
+  entropy: null
+  reject_to_other: true
+  strict_per_class:
+    plastic:
+      conf: 0.75
+    glass:
+      conf: 0.75
+
+multicrop:
+  enabled: true
+  trigger:
+    conf: 0.7
+    margin: 0.15
+  extra_crops:
+    - zoom_center
+    - full_resize
+  resize_scale: 1.1
+  zoom_ratio: 1
+  combine: best_score

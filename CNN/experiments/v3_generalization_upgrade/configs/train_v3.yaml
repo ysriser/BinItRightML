@@ -1,0 +1,163 @@
+seed: 42
+device: cuda
+require_cuda: false
+
+paths:
+  train_csv: CNN/data/tier1_splits/latest/train.csv
+  val_csv: CNN/data/tier1_splits/latest/val.csv
+  test_csv: CNN/data/tier1_splits/latest/test.csv
+  g3_data_dir: CNN/data/hardset
+  output_dir: CNN/experiments/v3_generalization_upgrade/outputs
+  artifact_dir: CNN/experiments/v3_generalization_upgrade/artifacts
+  models_dir: CNN/models
+
+labels:
+  - paper
+  - plastic
+  - metal
+  - glass
+  - other_uncertain
+  - e-waste
+  - textile
+
+model:
+  # b0 reference:
+  # backbone: efficientnet_b0
+  # img_size: 224
+  backbone: efficientnet_b3
+  pretrained: true
+  img_size: 256
+
+optimizer:
+  name: adamw
+  weight_decay: 0.01
+  betas: [0.9, 0.999]
+
+scheduler:
+  enabled: true
+  name: cosine
+  min_lr: 0.000001
+
+data:
+  # b0 reference:
+  # batch_size: 24
+  batch_size: 32
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 2
+  verify_images: true
+  skip_bad_images: true
+  max_retry: 5
+
+loss:
+  label_smoothing: 0.05
+  focal:
+    enabled: true
+    gamma: 1.5
+
+augment:
+  rrc_p: 1.0
+  rrc_scale_min: 0.35
+  rrc_scale_max: 1.0
+  rrc_ratio: [0.75, 1.33]
+  scale_down_pad:
+    enabled: true
+    prob: 0.45
+    scale_range: [0.45, 0.85]
+    random_position: true
+    pad_mode: mean
+  color_jitter: [0.25, 0.25, 0.25, 0.08]
+  color_jitter_p: 0.8
+  affine:
+    degrees: 12
+    translate: [0.06, 0.06]
+    scale: [0.88, 1.12]
+    shear: [0.0, 0.0]
+    p: 0.35
+  perspective:
+    distortion: 0.18
+    p: 0.20
+  blur:
+    enabled: true
+    kernel: 3
+    sigma: [0.1, 1.6]
+    p: 0.12
+  random_erasing_p: 0.30
+  random_erasing_scale: [0.02, 0.18]
+  random_erasing_ratio: [0.3, 3.3]
+  hflip_p: 0.5
+
+mixup_cutmix:
+  mixup_alpha: 0.25
+  mixup_p: 0.25
+  cutmix_alpha: 1.0
+  cutmix_p: 0.35
+
+phase_a:
+  epochs: 18
+  # b0 reference:
+  # lr: 0.0008
+  lr: 0.0005
+  domain_mix:
+    enabled: true
+    repeat: 2
+
+phase_b:
+  epochs: 12
+  # b0 reference:
+  # lr: 0.0001
+  # head_lr: 0.0004
+  # backbone_lr: 0.00004
+  lr: 0.00006
+  val_ratio: 0.2
+  prefer_domain_val: true
+  freeze_epochs: 2
+  head_lr: 0.00025
+  backbone_lr: 0.00002
+  only: false
+  phase_a_checkpoint: null
+  scheduler:
+    enabled: true
+    name: cosine
+    min_lr: 0.000001
+  rrc_p: 0.75
+  augment:
+    scale_down_pad:
+      prob: 0.20
+    color_jitter_p: 0.45
+    random_erasing_p: 0.12
+  mixup_cutmix:
+    mixup_alpha: 0.12
+    mixup_p: 0.12
+    cutmix_alpha: 1.0
+    cutmix_p: 0.10
+
+training:
+  grad_clip: 1.0
+  use_amp: true
+  # b0 reference:
+  # early_stop_patience: 8
+  early_stop_patience: 10
+  show_progress: true
+  log_every: 50
+
+onnx:
+  opset: 11
+  sanity_images: 5
+
+infer:
+  topk: 3
+  conf_threshold: 0.70
+  margin_threshold: 0.10
+  strict_per_class:
+    plastic: 0.80
+    glass: 0.80
+
+wandb:
+  enabled: true
+  project: bin-it-right
+  entity: null
+  tags: [v3, robust, calibration_ready, b3]
+  mode: online
+

@@ -1,0 +1,122 @@
+[
+  {
+    "filepath": "CNN\\data\\G3_SGData\\other_uncertain\\uncertain_001.HEIC",
+    "true_label": "other_uncertain",
+    "pred_label": "glass",
+    "pred_conf": 0.8724710941314697,
+    "topk": [
+      {
+        "label": "glass",
+        "p": 0.8724710941314697
+      },
+      {
+        "label": "other_uncertain",
+        "p": 0.06861657649278641
+      },
+      {
+        "label": "e-waste",
+        "p": 0.022425802424550056
+      }
+    ]
+  },
+  {
+    "filepath": "CNN\\data\\G3_SGData\\paper\\paper_002.HEIC",
+    "true_label": "paper",
+    "pred_label": "textile",
+    "pred_conf": 0.4605633020401001,
+    "topk": [
+      {
+        "label": "textile",
+        "p": 0.4605633020401001
+      },
+      {
+        "label": "paper",
+        "p": 0.4439644515514374
+      },
+      {
+        "label": "other_uncertain",
+        "p": 0.05588894709944725
+      }
+    ]
+  },
+  {
+    "filepath": "CNN\\data\\G3_SGData\\plastic\\plastic_001.jpg",
+    "true_label": "plastic",
+    "pred_label": "paper",
+    "pred_conf": 0.9402527809143066,
+    "topk": [
+      {
+        "label": "paper",
+        "p": 0.9402527809143066
+      },
+      {
+        "label": "other_uncertain",
+        "p": 0.014902048744261265
+      },
+      {
+        "label": "plastic",
+        "p": 0.014861267991364002
+      }
+    ]
+  },
+  {
+    "filepath": "CNN\\data\\G3_SGData\\plastic\\plastic_002.HEIC",
+    "true_label": "plastic",
+    "pred_label": "other_uncertain",
+    "pred_conf": 0.5702786445617676,
+    "topk": [
+      {
+        "label": "other_uncertain",
+        "p": 0.5702786445617676
+      },
+      {
+        "label": "plastic",
+        "p": 0.21145260334014893
+      },
+      {
+        "label": "metal",
+        "p": 0.11755578219890594
+      }
+    ]
+  },
+  {
+    "filepath": "CNN\\data\\G3_SGData\\plastic\\plastic_003.jpg",
+    "true_label": "plastic",
+    "pred_label": "other_uncertain",
+    "pred_conf": 0.7992786169052124,
+    "topk": [
+      {
+        "label": "other_uncertain",
+        "p": 0.7992786169052124
+      },
+      {
+        "label": "plastic",
+        "p": 0.07204855978488922
+      },
+      {
+        "label": "metal",
+        "p": 0.04446471109986305
+      }
+    ]
+  },
+  {
+    "filepath": "CNN\\data\\G3_SGData\\plastic\\plastic_005.HEIC",
+    "true_label": "plastic",
+    "pred_label": "other_uncertain",
+    "pred_conf": 0.9165260195732117,
+    "topk": [
+      {
+        "label": "other_uncertain",
+        "p": 0.9165260195732117
+      },
+      {
+        "label": "plastic",
+        "p": 0.027087097987532616
+      },
+      {
+        "label": "metal",
+        "p": 0.01775757595896721
+      }
+    ]
+  }
+]

@@ -1,0 +1,140 @@
+seed: 42
+device: cuda
+require_cuda: false
+
+paths:
+  train_csv: CNN/data/tier1_splits/latest/train.csv
+  val_csv: CNN/data/tier1_splits/latest/val.csv
+  test_csv: CNN/data/tier1_splits/latest/test.csv
+  g3_data_dir: CNN/data/hardset
+  output_dir: CNN/experiments/v2_robust_finetune/outputs
+  artifact_dir: CNN/experiments/v2_robust_finetune/artifacts
+  models_dir: CNN/models
+
+labels:
+  - paper
+  - plastic
+  - metal
+  - glass
+  - other_uncertain
+  - e-waste
+  - textile
+
+model:
+  backbone: efficientnet_b0
+  pretrained: true
+  img_size: 224
+
+optimizer:
+  name: adamw
+  weight_decay: 0.01
+  betas: [0.9, 0.999]
+
+scheduler:
+  enabled: true
+  name: cosine
+  min_lr: 0.000001
+
+data:
+  batch_size: 32
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 2
+  verify_images: true
+  skip_bad_images: true
+  max_retry: 5
+
+loss:
+  label_smoothing: 0.01
+
+augment:
+  rrc_p: 1.0
+  rrc_scale_min: 0.5
+  rrc_scale_max: 1.0
+  rrc_ratio: [0.75, 1.33]
+  scale_down_pad:
+    enabled: true
+    prob: 0.2
+    scale_range: [0.75, 0.9]
+    random_position: true
+    pad_mode: mean
+  color_jitter: [0.2, 0.2, 0.2, 0.05]
+  color_jitter_p: 0.7
+  affine:
+    degrees: 10
+    translate: [0.05, 0.05]
+    scale: [0.9, 1.1]
+    shear: [0.0, 0.0]
+    p: 0.3
+  perspective:
+    distortion: 0.15
+    p: 0.15
+  blur:
+    enabled: false
+    kernel: 3
+    sigma: [0.1, 1.0]
+    p: 0.05
+  random_erasing_p: 0.25
+  random_erasing_scale: [0.02, 0.12]
+  random_erasing_ratio: [0.3, 3.3]
+  hflip_p: 0.5
+
+mixup_cutmix:
+  mixup_alpha: 0.2
+  mixup_p: 0.2
+  cutmix_alpha: 1.0
+  cutmix_p: 0.3
+
+phase_a:
+  epochs: 25
+  lr: 0.001
+
+phase_b:
+  epochs: 25
+  lr: 0.0001
+  val_ratio: 0.1
+  prefer_domain_val: true
+  freeze_epochs: 2
+  head_lr: 0.0005
+  backbone_lr: 0.00005
+  only: false
+  phase_a_checkpoint: null
+  scheduler:
+    enabled: true
+    name: cosine
+    min_lr: 0.000001
+  rrc_p: 0.6
+  augment:
+    scale_down_pad:
+      prob: 0.1
+    color_jitter_p: 0.3
+    random_erasing_p: 0.1
+  mixup_cutmix:
+    mixup_alpha: 0.1
+    mixup_p: 0.1
+    cutmix_alpha: 1.0
+    cutmix_p: 0
+
+training:
+  grad_clip: 1.0
+  use_amp: true
+  early_stop_patience: 8
+  show_progress: true
+  log_every: 50
+
+onnx:
+  opset: 17
+  sanity_images: 5
+
+infer:
+  topk: 3
+  conf_threshold: 0.75
+  margin_threshold: 0.15
+
+wandb:
+  enabled: true
+  project: bin-it-right
+  entity: null
+  tags: [v2, robust, tier1]
+  mode: online

@@ -1,24 +1,20 @@
-# Bin-It-Right ML
+# Bin-It-Right ML (CNN)
 
-This repo focuses on **image classification**. We keep datasets and experiments
-separated to avoid config drift.
+This folder contains active CNN model code used by the product pipeline.
 
-## Common folders
-- `CNN/data/` (datasets, not committed)
-- `CNN/outputs/` (training outputs)
-- `CNN/models/` (exported models)
-- `CNN/experiments/` (versioned experiments)
-- `CNN/shared/` (reusable inference utilities)
-- `CNN/legacy_root/` (older root-level files, kept for reference)
+## Active folders
+- `clf_7cats_tier1/`: current main training/inference pipeline
+- `experiments/`: active experiments (v1 reject/multicrop, v3 upgrade)
+- `shared/`: reusable preprocessing/decision/onnx helpers
+- `services/`: scan API contract + service-side logic
+- `models/`: promoted runtime artifacts
+- `docs/`: technical integration docs
 
-## Key pipelines
-- Training: `CNN/clf_7cats_tier1/`
-- V1 inference logic: `CNN/experiments/v1_multicrop_reject/`
-- Parity self-test: `CNN/experiments/v1_parity_self_test/`
-- Robust fine-tune: `CNN/experiments/v2_robust_finetune/`
-- Android-facing scan contract + reference server: `CNN/docs/SCAN_SERVICE_SPEC_v0_1.md` + `CNN/services/scan_service_v0_1.py`
+## Archived code
+Older baseline files are moved to:
+- `legacy/cnn/legacy_root/`
 
-## Parity self-test (quick check)
-```
-python CNN/experiments/v1_parity_self_test/parity_cli.py --mode golden --images CNN/experiments/v1_parity_self_test/samples
-```
+Archived experiments and datasets are also under `legacy/cnn/`.
+
+## Note
+`v1_parity_self_test` stays in active experiments because it is still useful for Android/Python preprocessing parity checks.

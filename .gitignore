@@ -1,4 +1,4 @@
-# Python bytecode / caches
+# Python bytecode and caches
 __pycache__/
 *.py[cod]
 *$py.class
@@ -7,18 +7,19 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 .tox/
+.hypothesis/
+
+# Coverage and reports
 .coverage
 coverage.xml
 htmlcov/
-.hypothesis/
-
-# CI / security reports
 reports/
 bandit-results.json
 sca-report.txt
 report_html.html
 report_json.json
 
+# Virtual environments
 .venv/
 venv/
 env/
@@ -26,45 +27,54 @@ env/
 .env.*
 .envrc
 
+# Build artifacts
 build/
 dist/
 *.egg-info/
 
+# IDE and OS files
 .idea/
 .vscode/
 .DS_Store
 Thumbs.db
 *.swp
 
-# Project outputs / data
-CNN/data/
-CNN/artifacts/
-CNN/runs/
-CNN/experiments/**/
-CNN/experiments/**/artifacts/
-!CNN/experiments/v3_generalization_upgrade/
-!CNN/experiments/v3_generalization_upgrade/README.md
-!CNN/experiments/v3_generalization_upgrade/configs/
-!CNN/experiments/v3_generalization_upgrade/configs/**
-!CNN/experiments/v3_generalization_upgrade/scripts/
-!CNN/experiments/v3_generalization_upgrade/scripts/**
-CNN/experiments/v3_generalization_upgrade/outputs/
-CNN/experiments/v3_generalization_upgrade/artifacts/
-**/wandb/
-**/mlruns/
-**/lightning_logs/
+# ML runtime outputs and heavy artifacts
+CNN/outputs/
+CNN/**/outputs/
+CNN/**/artifacts/
+CNN/**/wandb/
+CNN/**/mlruns/
+CNN/**/lightning_logs/
 
-# Local scratch (do not commit)
-CNN/tools/_scratch/
-
-# Ignore legacy 28cats module
-CNN/clf_28cats_taco/
-
-# Keep data scripts/configs, ignore other data
+# Keep data scripts/configs tracked, ignore all other dataset content
 CNN/data/**
 !CNN/data/configs/
 !CNN/data/configs/**
 !CNN/data/scripts/
 !CNN/data/scripts/**
 
-CNN/experiments/v3_generalization_upgrade/scripts/__pycache__/
+# Local scratch and generated binaries
+CNN/tools/_scratch/
+*.onnx
+*.pt
+*.pth
+*.ckpt
+
+# Legacy: keep source history, ignore generated outputs only
+legacy/**/outputs/
+legacy/**/artifacts/
+legacy/**/wandb/
+legacy/**/mlruns/
+legacy/**/lightning_logs/
+legacy/**/__pycache__/
+
+# Forecast generated runtime files
+forecast/__pycache__/
+forecast/.pytest_cache/
+
+
+# Recursive cache ignores
+**/__pycache__/
+**/*.pyc
+

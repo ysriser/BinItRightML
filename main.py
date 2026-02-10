@@ -1,3 +1,5 @@
+# Record 2
+
 import os
 import pickle
 from fastapi import FastAPI, Request
@@ -15,12 +17,6 @@ async def custom_404_handler(request: Request, __):
         status_code=404,
         content={"detail": "Not Found", "path": request.url.path},
     )
-
-# Fixes: Potential Host Header Injection
-app.add_middleware(
-    TrustedHostMiddleware, 
-    allowed_hosts=["test.binitright.app", "localhost"]
-)
 
 # Fixes: Security Headers (Low risk alerts in ZAP)
 @app.middleware("http")

@@ -31,7 +31,7 @@ jobs:
           path: lint-report.txt
 
   # ==========================================
-  # BOX 2: UNIT TESTS
+  # BOX 2: UNIT TESTS + COVERAGE
   # ==========================================
   unit-tests:
     name: Unit Tests (Pytest)
@@ -43,6 +43,7 @@ jobs:
         with:
           python-version: "3.11"
           cache: "pip"
+
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
@@ -70,6 +71,15 @@ jobs:
         with:
           name: python-unit-reports
           path: reports/
+
+      # NEW: Upload coverage for aggregation
+      - name: Upload Coverage Reports
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-coverage-reports
+          path: coverage.xml
+          retention-days: 7
 
   # ==========================================
   # BOX 3: SCA
@@ -206,4 +216,5 @@ jobs:
           name: python-app-binary-pr
           path: python-app-pr.zip
           retention-days: 1
+
 

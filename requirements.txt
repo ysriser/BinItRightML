@@ -11,7 +11,7 @@ python-multipart==0.0.22
 pyyaml==6.0.3
 pillow==12.1.0
 pillow-heif==0.20.0
-scikit-learn==1.8.0
+scikit-learn>=1.5.0
 matplotlib==3.10.8
 # NOTE: onnxruntime 1.17.x wheels are not compatible with NumPy 2.x.
 # Pin NumPy <2 to avoid import/runtime errors (CI + local).

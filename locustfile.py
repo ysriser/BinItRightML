@@ -6,11 +6,11 @@ class BinItRightUser(HttpUser):
 
     @task(5)
     def get_forecast(self):
-        """Simulates users hitting the ML forecast endpoint."""
+        
         # This targets the actual logic that loads your pkl file
-        self.client.get("/forecast")
+        self.client.get("/python/forecast")
 
     @task(1)
     def load_openapi(self):
         """Simulates developers/tools fetching the API schema."""
-        self.client.get("/openapi.json")
+        self.client.get("/python/openapi.json")

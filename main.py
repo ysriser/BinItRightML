@@ -42,7 +42,7 @@ async def add_security_headers(request: Request, call_next):
 
 # 1. Resolve the path immediately
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-pkl_path = os.path.join(BASE_DIR, "forecasts1.pkl")
+pkl_path = os.path.join(BASE_DIR, "forecast", "data", "forecasts1.pkl")
 
 # 2. Load the data at the TOP LEVEL (No more startup event needed)
 print(f"--- Attempting to load: {pkl_path} ---")

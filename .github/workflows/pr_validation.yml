@@ -47,13 +47,14 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install pytest-cov
       - name: Collect Pytest Tests (for traceability)
         run: |
           mkdir -p reports
           pytest test_main.py CNN/shared/tests CNN/clf_7cats_tier1/tests CNN/services/tests --collect-only -q | tee reports/collected-tests.txt
       - name: Run Pytest
         run: |
-          pytest test_main.py CNN/shared/tests CNN/clf_7cats_tier1/tests CNN/services/tests --junitxml=reports/unit-test.xml
+          pytest test_main.py CNN/shared/tests CNN/clf_7cats_tier1/tests CNN/services/tests --junitxml=reports/unit-test.xml --cov=. --cov-report=xml:coverage.xml --cov-report=html:reports/htmlcov
       - name: Validate test suite paths
         run: |
           if grep -q "classification_6cats_new" reports/unit-test.xml; then
@@ -77,7 +78,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: python-coverage-reports
-          path: coverage.xml
+          path: |
+            coverage.xml
+            reports/htmlcov/
           retention-days: 7
 
   # ==========================================

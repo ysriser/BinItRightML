@@ -78,3 +78,17 @@ forecast/.pytest_cache/
 **/__pycache__/
 **/*.pyc
 
+
+
+# Additional generated artifacts (forecast/legacy/runtime)
+forecast/outputs/
+forecast/artifacts/
+forecast/reports/
+forecast/logs/
+legacy/**/reports/
+legacy/**/logs/
+**/.ipynb_checkpoints/
+*.log
+*.tmp
+*.bak
+.coverage.*

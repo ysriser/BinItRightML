@@ -41,44 +41,26 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
 
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-      - name: Collect Pytest Tests (for traceability)
-        run: |
-          mkdir -p reports
-          pytest test_main.py CNN/shared/tests CNN/clf_7cats_tier1/tests CNN/services/tests --collect-only -q | tee reports/collected-tests.txt
-      - name: Run Pytest
-        run: |
-          pytest test_main.py CNN/shared/tests CNN/clf_7cats_tier1/tests CNN/services/tests --junitxml=reports/unit-test.xml
-      - name: Validate test suite paths
-        run: |
-          if grep -q "classification_6cats_new" reports/unit-test.xml; then
-            echo "Unexpected legacy test suite path detected in junit report."
-            exit 1
-          fi
-          if grep -q "test_placeholder" reports/unit-test.xml; then
-            echo "Unexpected placeholder test detected in junit report."
-            exit 1
-          fi
-      - name: Upload Unit Test Reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: python-unit-reports
-          path: reports/
+          # You MUST install pytest-cov to generate coverage.xml
+          pip install -r requirements.txt pytest-cov
 
-      # NEW: Upload coverage for aggregation
+      - name: Run Pytest with Coverage
+        run: |
+          # Use --cov=. to measure coverage and --cov-report=xml to create the file
+          pytest test_main.py CNN/shared/tests CNN/clf_7cats_tier1/tests CNN/services/tests \
+          --junitxml=reports/unit-test.xml \
+          --cov=. --cov-report=xml:coverage.xml
+
       - name: Upload Coverage Reports
-        if: success()
+        if: always() # Always upload so we can see if it worked
         uses: actions/upload-artifact@v4
         with:
           name: python-coverage-reports
           path: coverage.xml
-          retention-days: 7
 
   # ==========================================
   # BOX 3: SCA

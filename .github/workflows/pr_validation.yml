@@ -20,14 +20,14 @@ jobs:
       - name: Run Ruff
         run: |
           pip install ruff
-          # Output to a file for artifact storage
-          ruff check . > lint-report.txt || true
+          # Generate JSON for SonarCloud and text for GitHub logs
+          ruff check . --output-format json --output-file ruff-report.json || true
       - name: Upload Lint Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: python-lint-reports
-          path: lint-report.txt
+          path: ruff-report.json
 
   # ==========================================
   # BOX 2: UNIT TESTS + COVERAGE

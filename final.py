@@ -24,3 +24,4 @@ def get_final_forecast():
         )
 
     return response
+

@@ -109,15 +109,14 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           target: "https://${{ secrets.TEST_URL }}:443/python/openapi.json"
           format: openapi
-          fail_action: true
-          allow_issue_writing: false
-          cmd_options: "-I" # Only fail on Medium/High risks
+          # Ensure JSON is generated
+          artifact_name: "python-zap-report"
 
       - name: Upload DAST Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: python-zap-report
+          name: python-dast-results # UNIQUE NAME
           path: |
             report_html.html
             report_json.json

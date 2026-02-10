@@ -51,7 +51,14 @@ jobs:
       - name: Run Pytest with Coverage
         run: |
           # Use --cov=. to measure coverage and --cov-report=xml to create the file
-          pytest test_main.py CNN/shared/tests CNN/clf_7cats_tier1/tests CNN/services/tests \
+          pytest . \
+          --ignore=.venv \
+          --ignore=legacy \
+          --ignore=reports \
+          --ignore=CNN/data \
+          --ignore=CNN/models \
+          --ignore=CNN/outputs \
+          --ignore=tests/test_main.py \
           --junitxml=reports/unit-test.xml \
           --cov=. --cov-report=xml:coverage.xml
 
@@ -197,3 +204,4 @@ jobs:
           name: python-app-binary-pr
           path: python-app-pr.zip
           retention-days: 1
+          

@@ -117,9 +117,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: python-dast-results # UNIQUE NAME
-          path: |
-            report_html.html
-            report_json.json
+          path: report_json.json
 
   # ==========================================
   # BOX 8: PRODUCTION RELEASE & VERSION TAGGING

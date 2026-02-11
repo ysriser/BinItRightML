@@ -339,6 +339,33 @@ def _evaluate_threshold_candidate(
     return {"coverage": coverage, "selective_acc": selective_acc}
 
 
+def _should_replace_best_candidate(
+    candidate: Dict[str, float],
+    best: Dict[str, float] | None,
+) -> bool:
+    if candidate["selective_acc"] < 0.95:
+        return False
+    if best is None:
+        return True
+    if candidate["coverage"] > best["coverage"]:
+        return True
+    if candidate["coverage"] < best["coverage"]:
+        return False
+    return candidate["selective_acc"] > best["selective_acc"]
+
+
+def _default_threshold_candidate(
+    conf_values: List[float],
+    margin_values: List[float],
+) -> Dict[str, float]:
+    return {
+        "conf": conf_values[0],
+        "margin": margin_values[0],
+        "coverage": 0.0,
+        "selective_acc": 0.0,
+    }
+
+
 def sweep_thresholds(
     probs_list: List[np.ndarray],
     labels: List[int],
@@ -348,7 +375,7 @@ def sweep_thresholds(
     decision_utils = load_decision_utils()
     conf_values = [round(x, 2) for x in np.arange(0.50, 0.951, 0.05)]
     margin_values = [round(x, 2) for x in np.arange(0.05, 0.301, 0.05)]
-    best = None
+    best: Dict[str, float] | None = None
 
     for conf in conf_values:
         for margin in margin_values:
@@ -365,27 +392,17 @@ def sweep_thresholds(
             coverage = stats["coverage"]
             selective_acc = stats["selective_acc"]
 
-            meets = selective_acc >= 0.95
             candidate = {
                 "conf": conf,
                 "margin": margin,
                 "coverage": coverage,
                 "selective_acc": selective_acc,
             }
-            if meets:
-                if best is None or candidate["coverage"] > best["coverage"]:
-                    best = candidate
-                elif best and candidate["coverage"] == best["coverage"]:
-                    if candidate["selective_acc"] > best["selective_acc"]:
-                        best = candidate
+            if _should_replace_best_candidate(candidate, best):
+                best = candidate
 
     if best is None and conf_values and margin_values:
-        best = {
-            "conf": conf_values[0],
-            "margin": margin_values[0],
-            "coverage": 0.0,
-            "selective_acc": 0.0,
-        }
+        best = _default_threshold_candidate(conf_values, margin_values)
     return best or {}
 
 

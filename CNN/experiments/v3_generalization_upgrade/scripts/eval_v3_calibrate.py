@@ -462,6 +462,60 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def resolve_eval_paths(
+    args: argparse.Namespace,
+    cfg: dict,
+    ml_root: Path,
+) -> Tuple[Path, Path, Path, Path, Path]:
+    paths = cfg.get("paths", {})
+
+    model_path = args.model or Path(paths.get("robust_model", "CNN/models/tier1.onnx"))
+    infer_path = args.infer or Path(paths.get("robust_infer", "CNN/models/infer_config.json"))
+    label_map_path = args.label_map or Path(paths.get("label_map", "CNN/models/label_map.json"))
+    data_dir = args.data_dir or Path(paths.get("hardset_dir", "CNN/data/hardset"))
+    output_root = args.output_dir or Path(
+        paths.get("output_dir", "CNN/experiments/v3_generalization_upgrade/outputs")
+    )
+
+    resolved_paths = []
+    for path in (model_path, infer_path, label_map_path, data_dir, output_root):
+        resolved_paths.append(path if path.is_absolute() else ml_root / path)
+    return tuple(resolved_paths)  # type: ignore[return-value]
+
+
+def resolve_providers(prefer_cuda: bool) -> List[str]:
+    if prefer_cuda and "CUDAExecutionProvider" in ort.get_available_providers():
+        return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    return ["CPUExecutionProvider"]
+
+
+def write_threshold_sweep_csv(sweep_csv: Path, sweep_rows: List[dict]) -> None:
+    with sweep_csv.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "conf",
+                "margin",
+                "coverage",
+                "selective_acc",
+                "overall_top1_after_reject",
+            ],
+        )
+        writer.writeheader()
+        for row in sweep_rows:
+            writer.writerow(row)
+
+
+def build_recommended_thresholds(best_thresholds: dict, sweep_cfg: dict) -> dict:
+    return {
+        "conf_threshold": best_thresholds.get("conf"),
+        "margin_threshold": best_thresholds.get("margin"),
+        "strict_per_class": sweep_cfg.get("strict_per_class", {}),
+        "coverage": best_thresholds.get("coverage", 0.0),
+        "selective_acc": best_thresholds.get("selective_acc", 0.0),
+    }
+
+
 def main() -> None:
     args = parse_args()
     ml_root = Path(__file__).resolve().parents[4]
@@ -471,24 +525,11 @@ def main() -> None:
         config_path = ml_root / config_path
     cfg = load_yaml(config_path)
 
-    paths = cfg.get("paths", {})
-
-    model_path = args.model or Path(paths.get("robust_model", "CNN/models/tier1.onnx"))
-    infer_path = args.infer or Path(paths.get("robust_infer", "CNN/models/infer_config.json"))
-    label_map_path = args.label_map or Path(paths.get("label_map", "CNN/models/label_map.json"))
-    data_dir = args.data_dir or Path(paths.get("hardset_dir", "CNN/data/hardset"))
-    output_root = args.output_dir or Path(paths.get("output_dir", "CNN/experiments/v3_generalization_upgrade/outputs"))
-
-    if not model_path.is_absolute():
-        model_path = ml_root / model_path
-    if not infer_path.is_absolute():
-        infer_path = ml_root / infer_path
-    if not label_map_path.is_absolute():
-        label_map_path = ml_root / label_map_path
-    if not data_dir.is_absolute():
-        data_dir = ml_root / data_dir
-    if not output_root.is_absolute():
-        output_root = ml_root / output_root
+    model_path, infer_path, label_map_path, data_dir, output_root = resolve_eval_paths(
+        args=args,
+        cfg=cfg,
+        ml_root=ml_root,
+    )
 
     infer_cfg = load_json(infer_path)
     label_map = load_json(label_map_path)
@@ -506,9 +547,7 @@ def main() -> None:
     seed = int(calib_cfg.get("seed", 42))
     calib_items, eval_items = stratified_split(items, calib_ratio, seed)
 
-    providers = ["CPUExecutionProvider"]
-    if args.prefer_cuda and "CUDAExecutionProvider" in ort.get_available_providers():
-        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    providers = resolve_providers(args.prefer_cuda)
 
     session = ort.InferenceSession(str(model_path), providers=providers)
     transform = build_transform(
@@ -564,22 +603,9 @@ def main() -> None:
     )
 
     sweep_csv = run_dir / "threshold_sweep.csv"
-    with sweep_csv.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(
-            f,
-            fieldnames=["conf", "margin", "coverage", "selective_acc", "overall_top1_after_reject"],
-        )
-        writer.writeheader()
-        for row in sweep_rows:
-            writer.writerow(row)
+    write_threshold_sweep_csv(sweep_csv, sweep_rows)
 
-    recommended = {
-        "conf_threshold": best_thresholds.get("conf"),
-        "margin_threshold": best_thresholds.get("margin"),
-        "strict_per_class": sweep_cfg.get("strict_per_class", {}),
-        "coverage": best_thresholds.get("coverage", 0.0),
-        "selective_acc": best_thresholds.get("selective_acc", 0.0),
-    }
+    recommended = build_recommended_thresholds(best_thresholds, sweep_cfg)
 
     summary = {
         "model": str(model_path),

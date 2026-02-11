@@ -13,7 +13,7 @@ import warnings
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import timm
@@ -59,6 +59,7 @@ IMAGE_EXTS = {
 LOGGER = logging.getLogger(__name__)
 INFER_CONFIG_FILENAME = "infer_config.json"
 LABEL_MAP_FILENAME = "label_map.json"
+CURVES_FILENAME = "curves.png"
 DEFAULT_SEED = 42
 NUMPY_RNG = np.random.default_rng(DEFAULT_SEED)
 
@@ -320,6 +321,86 @@ class RRCOrCenter:
         return self._center_crop(self._resize(img))
 
 
+def _resolve_scale_pad_value(scale_cfg: dict, mean: Sequence[float]) -> Tuple[int, int, int]:
+    pad_mode = str(scale_cfg.get("pad_mode", "mean")).lower()
+    if pad_mode == "mean":
+        return tuple(int(round(m * 255)) for m in mean)
+    return (0, 0, 0)
+
+
+def _append_optional_train_augmentations(
+    transforms_list: List[transforms.Transform],
+    mean: Sequence[float],
+    aug: dict,
+    scale_cfg: dict,
+    color_jitter,
+    color_jitter_p: float,
+    affine_cfg: dict,
+    perspective_cfg: dict,
+    blur_cfg: dict,
+    img_size: int,
+) -> None:
+    if bool(scale_cfg.get("enabled", True)):
+        transforms_list.append(
+            ScaleDownPad(
+                img_size=img_size,
+                scale_range=tuple(scale_cfg.get("scale_range", [0.3, 0.7])),
+                prob=float(scale_cfg.get("prob", 0.5)),
+                random_position=bool(scale_cfg.get("random_position", True)),
+                pad_value=_resolve_scale_pad_value(scale_cfg, mean),
+            )
+        )
+
+    transforms_list.append(transforms.RandomHorizontalFlip(p=float(aug.get("hflip_p", 0.5))))
+    if color_jitter_p > 0:
+        transforms_list.append(
+            transforms.RandomApply(
+                [transforms.ColorJitter(*color_jitter)],
+                p=color_jitter_p,
+            )
+        )
+
+    affine_prob = float(affine_cfg.get("p", 0.0))
+    if affine_prob > 0:
+        transforms_list.append(
+            transforms.RandomApply(
+                [
+                    transforms.RandomAffine(
+                        degrees=float(affine_cfg.get("degrees", 0.0)),
+                        translate=tuple(affine_cfg.get("translate", [0.0, 0.0])),
+                        scale=tuple(affine_cfg.get("scale", [1.0, 1.0])),
+                        shear=tuple(affine_cfg.get("shear", [0.0, 0.0])),
+                        interpolation=InterpolationMode.BICUBIC,
+                    )
+                ],
+                p=affine_prob,
+            )
+        )
+
+    perspective_prob = float(perspective_cfg.get("p", 0.0))
+    if perspective_prob > 0:
+        transforms_list.append(
+            transforms.RandomPerspective(
+                distortion_scale=float(perspective_cfg.get("distortion", 0.3)),
+                p=float(perspective_cfg.get("p", 0.2)),
+                interpolation=InterpolationMode.BICUBIC,
+            )
+        )
+
+    if bool(blur_cfg.get("enabled", False)):
+        transforms_list.append(
+            transforms.RandomApply(
+                [
+                    transforms.GaussianBlur(
+                        kernel_size=int(blur_cfg.get("kernel", 3)),
+                        sigma=tuple(blur_cfg.get("sigma", [0.1, 2.0])),
+                    )
+                ],
+                p=float(blur_cfg.get("p", 0.2)),
+            )
+        )
+
+
 def build_train_transform(
     cfg: dict,
     img_size: int,
@@ -342,13 +423,11 @@ def build_train_transform(
     color_jitter_p = float(
         phase_aug.get("color_jitter_p", aug.get("color_jitter_p", 1.0))
     )
-    hflip_p = float(aug.get("hflip_p", 0.5))
 
     scale_cfg = dict(aug.get("scale_down_pad", {}) or {})
     phase_scale_cfg = phase_aug.get("scale_down_pad")
     if isinstance(phase_scale_cfg, dict):
         scale_cfg.update(phase_scale_cfg)
-    scale_enabled = bool(scale_cfg.get("enabled", True))
 
     affine_cfg = aug.get("affine", {}) or {}
     perspective_cfg = aug.get("perspective", {}) or {}
@@ -363,69 +442,18 @@ def build_train_transform(
     transforms_list: List[transforms.Transform] = [
         RRCOrCenter(rrc=rrc, img_size=img_size, rrc_p=rrc_p)
     ]
-
-    if scale_enabled:
-        pad_mode = str(scale_cfg.get("pad_mode", "mean")).lower()
-        if pad_mode == "mean":
-            pad_value = tuple(int(round(m * 255)) for m in mean)
-        else:
-            pad_value = (0, 0, 0)
-        transforms_list.append(
-            ScaleDownPad(
-                img_size=img_size,
-                scale_range=tuple(scale_cfg.get("scale_range", [0.3, 0.7])),
-                prob=float(scale_cfg.get("prob", 0.5)),
-                random_position=bool(scale_cfg.get("random_position", True)),
-                pad_value=pad_value,
-            )
-        )
-
-    transforms_list.append(transforms.RandomHorizontalFlip(p=hflip_p))
-    if color_jitter_p > 0:
-        transforms_list.append(
-            transforms.RandomApply(
-                [transforms.ColorJitter(*color_jitter)],
-                p=color_jitter_p,
-            )
-        )
-
-    if float(affine_cfg.get("p", 0.0)) > 0:
-        transforms_list.append(
-            transforms.RandomApply(
-                [
-                    transforms.RandomAffine(
-                        degrees=float(affine_cfg.get("degrees", 0.0)),
-                        translate=tuple(affine_cfg.get("translate", [0.0, 0.0])),
-                        scale=tuple(affine_cfg.get("scale", [1.0, 1.0])),
-                        shear=tuple(affine_cfg.get("shear", [0.0, 0.0])),
-                        interpolation=InterpolationMode.BICUBIC,
-                    )
-                ],
-                p=float(affine_cfg.get("p", 0.0)),
-            )
-        )
-
-    if float(perspective_cfg.get("p", 0.0)) > 0:
-        transforms_list.append(
-            transforms.RandomPerspective(
-                distortion_scale=float(perspective_cfg.get("distortion", 0.3)),
-                p=float(perspective_cfg.get("p", 0.2)),
-                interpolation=InterpolationMode.BICUBIC,
-            )
-        )
-
-    if bool(blur_cfg.get("enabled", False)):
-        transforms_list.append(
-            transforms.RandomApply(
-                [
-                    transforms.GaussianBlur(
-                        kernel_size=int(blur_cfg.get("kernel", 3)),
-                        sigma=tuple(blur_cfg.get("sigma", [0.1, 2.0])),
-                    )
-                ],
-                p=float(blur_cfg.get("p", 0.2)),
-            )
-        )
+    _append_optional_train_augmentations(
+        transforms_list=transforms_list,
+        mean=mean,
+        aug=aug,
+        scale_cfg=scale_cfg,
+        color_jitter=color_jitter,
+        color_jitter_p=color_jitter_p,
+        affine_cfg=affine_cfg,
+        perspective_cfg=perspective_cfg,
+        blur_cfg=blur_cfg,
+        img_size=img_size,
+    )
 
     transforms_list.extend(
         [
@@ -701,12 +729,12 @@ def save_history(
         ax[1].set_xlabel("epoch")
         ax[1].legend()
         fig.tight_layout()
-        fig.savefig(out_dir / "curves.png", dpi=150)
+        fig.savefig(out_dir / CURVES_FILENAME, dpi=150)
         plt.close(fig)
     except Exception as exc:
         LOGGER.warning(
             "Failed to render training curves at %s: %s",
-            out_dir / "curves.png",
+            out_dir / CURVES_FILENAME,
             exc,
         )
 
@@ -806,6 +834,179 @@ def log_wandb(
     run.log(data)
 
 
+def make_loader_kwargs(
+    base_batch_size: int,
+    base_pin: bool,
+    base_persistent: bool,
+    base_prefetch: int,
+    num_workers: int,
+) -> Dict[str, object]:
+    kwargs: Dict[str, object] = {
+        "batch_size": base_batch_size,
+        "num_workers": num_workers,
+        "pin_memory": base_pin,
+        "worker_init_fn": seed_worker if num_workers > 0 else None,
+    }
+    if num_workers > 0:
+        kwargs["persistent_workers"] = base_persistent
+        kwargs["prefetch_factor"] = base_prefetch
+    return kwargs
+
+
+def make_optimizer(
+    model: torch.nn.Module,
+    optim_cfg: dict,
+    weight_decay: float,
+    betas: Tuple[float, ...],
+    lr: float,
+) -> torch.optim.Optimizer:
+    if optim_cfg.get("name", "adamw").lower() == "adamw":
+        return torch.optim.AdamW(
+            model.parameters(),
+            lr=lr,
+            weight_decay=weight_decay,
+            betas=betas,
+        )
+    return torch.optim.Adam(
+        model.parameters(),
+        lr=lr,
+        weight_decay=weight_decay,
+        betas=betas,
+    )
+
+
+def make_optimizer_split(
+    optim_cfg: dict,
+    weight_decay: float,
+    betas: Tuple[float, ...],
+    backbone_params: List[torch.nn.Parameter],
+    head_params: List[torch.nn.Parameter],
+    backbone_lr: float,
+    head_lr: float,
+) -> torch.optim.Optimizer:
+    split_default_lr = float(optim_cfg.get("split_default_lr", optim_cfg.get("lr", 1e-3)))
+    params = []
+    if backbone_params:
+        params.append(
+            {
+                "params": backbone_params,
+                "lr": backbone_lr,
+                "weight_decay": weight_decay,
+            }
+        )
+    if head_params:
+        params.append(
+            {
+                "params": head_params,
+                "lr": head_lr,
+                "weight_decay": weight_decay,
+            }
+        )
+    if optim_cfg.get("name", "adamw").lower() == "adamw":
+        return torch.optim.AdamW(
+            params,
+            lr=split_default_lr,
+            weight_decay=weight_decay,
+            betas=betas,
+        )
+    return torch.optim.Adam(
+        params,
+        lr=split_default_lr,
+        weight_decay=weight_decay,
+        betas=betas,
+    )
+
+
+def make_scheduler(
+    sched_cfg: dict,
+    optimizer: torch.optim.Optimizer,
+    epochs: int,
+    override: Optional[dict] = None,
+):
+    cfg_local = dict(sched_cfg)
+    if isinstance(override, dict):
+        cfg_local.update(override)
+    if not bool(cfg_local.get("enabled", True)):
+        return None
+    name = cfg_local.get("name", "cosine")
+    min_lr = float(cfg_local.get("min_lr", 1e-6))
+    if name == "cosine":
+        return torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=epochs,
+            eta_min=min_lr,
+        )
+    return torch.optim.lr_scheduler.StepLR(
+        optimizer,
+        step_size=max(1, epochs // 3),
+        gamma=0.1,
+    )
+
+
+def run_epoch(
+    model: torch.nn.Module,
+    loader: DataLoader,
+    optimizer: torch.optim.Optimizer,
+    mix_cfg: dict,
+    num_classes: int,
+    use_amp: bool,
+    grad_clip: float,
+    show_progress: bool,
+    device: torch.device,
+    scaler: torch.amp.GradScaler,
+    focal_loss: nn.Module,
+    ce_loss: nn.Module,
+    use_focal: bool,
+) -> Tuple[float, float]:
+    model.train()
+    total_loss = 0.0
+    total_correct = 0
+    total_samples = 0
+
+    iterator = loader
+    if show_progress:
+        iterator = tqdm(loader, desc="train", ncols=100)
+
+    for images, labels_batch in iterator:
+        images = images.to(device)
+        labels_batch = labels_batch.to(device)
+        optimizer.zero_grad(set_to_none=True)
+
+        with torch.amp.autocast(device_type="cuda", enabled=use_amp):
+            mixed_images, mixed_targets, mixed = apply_mixup_cutmix(
+                images,
+                labels_batch,
+                num_classes=num_classes,
+                mixup_cfg=mix_cfg,
+            )
+            logits = model(mixed_images)
+            if mixed:
+                loss = soft_target_ce(logits, mixed_targets)
+            else:
+                loss = focal_loss(logits, labels_batch) if use_focal else ce_loss(logits, labels_batch)
+
+        if use_amp:
+            scaler.scale(loss).backward()
+            if grad_clip > 0:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            if grad_clip > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+            optimizer.step()
+
+        total_loss += loss.item() * labels_batch.size(0)
+        total_samples += labels_batch.size(0)
+        total_correct += (torch.argmax(logits, dim=1) == labels_batch).sum().item()
+
+    avg_loss = total_loss / max(total_samples, 1)
+    avg_acc = total_correct / max(total_samples, 1)
+    return avg_loss, avg_acc
+
+
 def split_backbone_head_params(
     model: torch.nn.Module,
 ) -> Tuple[List[torch.nn.Parameter], List[torch.nn.Parameter]]:
@@ -821,6 +1022,549 @@ def split_backbone_head_params(
 def set_requires_grad(params: List[torch.nn.Parameter], value: bool) -> None:
     for param in params:
         param.requires_grad = value
+
+
+def update_best_tracking(
+    model: torch.nn.Module,
+    source_metrics: Dict[str, float],
+    best_f1: float,
+    best_state: Optional[dict],
+    best_metrics: Dict[str, float],
+    best_epoch: int,
+    best_source: str,
+    epoch: int,
+    source_name: str,
+) -> Tuple[float, Optional[dict], Dict[str, float], int, str, bool]:
+    if source_metrics["macro_f1"] <= best_f1:
+        return best_f1, best_state, best_metrics, best_epoch, best_source, False
+    return (
+        source_metrics["macro_f1"],
+        model.state_dict(),
+        source_metrics,
+        epoch,
+        source_name,
+        True,
+    )
+
+
+def append_phase_history(
+    history: List[Dict[str, float]],
+    phase: int,
+    epoch: int,
+    global_epoch: int,
+    train_loss: float,
+    train_acc: float,
+    source_metrics: Dict[str, float],
+) -> None:
+    history.append(
+        {
+            "phase": phase,
+            "epoch": epoch,
+            "global_epoch": global_epoch,
+            "train_loss": float(train_loss),
+            "train_acc": float(train_acc),
+            "val_top1": float(source_metrics["top1"]),
+            "val_top3": float(source_metrics["top3"]),
+            "val_f1": float(source_metrics["macro_f1"]),
+        }
+    )
+
+
+def log_phase_epoch(
+    wb_run: Optional["wandb.sdk.wandb_run.Run"],
+    phase: int,
+    epoch: int,
+    global_epoch: int,
+    train_loss: float,
+    train_acc: float,
+    source_metrics: Dict[str, float],
+    optimizer: torch.optim.Optimizer,
+) -> None:
+    log_wandb(
+        wb_run,
+        {
+            "phase": phase,
+            "epoch": epoch,
+            "global_epoch": global_epoch,
+            "train_loss": train_loss,
+            "train_acc": train_acc,
+            "val_top1": source_metrics["top1"],
+            "val_top3": source_metrics["top3"],
+            "val_f1": source_metrics["macro_f1"],
+            "lr": optimizer.param_groups[0]["lr"],
+        },
+    )
+
+
+def maybe_log_domain_metrics(
+    wb_run: Optional["wandb.sdk.wandb_run.Run"],
+    domain_metrics: Optional[Dict[str, float]],
+) -> None:
+    if domain_metrics is None:
+        return
+    log_wandb(
+        wb_run,
+        {
+            "domain_top1": domain_metrics["top1"],
+            "domain_top3": domain_metrics["top3"],
+            "domain_f1": domain_metrics["macro_f1"],
+        },
+    )
+
+
+def run_phase_a_epochs(
+    model: torch.nn.Module,
+    phase_a_epochs: int,
+    train_loader: DataLoader,
+    val_loader: DataLoader,
+    domain_val_loader: DataLoader,
+    use_domain_val: bool,
+    run_epoch_fn: Callable[..., Tuple[float, float]],
+    num_classes: int,
+    use_amp: bool,
+    grad_clip: float,
+    show_progress: bool,
+    device: torch.device,
+    scaler: torch.amp.GradScaler,
+    focal_loss: nn.Module,
+    ce_loss: nn.Module,
+    use_focal: bool,
+    optimizer: torch.optim.Optimizer,
+    scheduler,
+    mix_cfg_a: dict,
+    history: List[Dict[str, float]],
+    wb_run: Optional["wandb.sdk.wandb_run.Run"],
+    best_f1: float,
+    best_state: Optional[dict],
+    best_metrics: Dict[str, float],
+    best_epoch: int,
+    best_source: str,
+    no_improve: int,
+    early_patience: int,
+) -> Tuple[float, Optional[dict], Dict[str, float], int, str, int]:
+    for epoch in range(1, phase_a_epochs + 1):
+        train_loss, train_acc = run_epoch_fn(
+            model=model,
+            loader=train_loader,
+            optimizer=optimizer,
+            mix_cfg=mix_cfg_a,
+            num_classes=num_classes,
+            use_amp=use_amp,
+            grad_clip=grad_clip,
+            show_progress=show_progress,
+            device=device,
+            scaler=scaler,
+            focal_loss=focal_loss,
+            ce_loss=ce_loss,
+            use_focal=use_focal,
+        )
+        if scheduler:
+            scheduler.step()
+
+        val_metrics, _, _ = evaluate(model, val_loader, device)
+        domain_metrics = None
+        source_metrics = val_metrics
+        source_name = "val"
+        if use_domain_val:
+            domain_metrics, _, _ = evaluate(model, domain_val_loader, device)
+            source_metrics = domain_metrics
+            source_name = "domain_val"
+
+        (
+            best_f1,
+            best_state,
+            best_metrics,
+            best_epoch,
+            best_source,
+            improved,
+        ) = update_best_tracking(
+            model=model,
+            source_metrics=source_metrics,
+            best_f1=best_f1,
+            best_state=best_state,
+            best_metrics=best_metrics,
+            best_epoch=best_epoch,
+            best_source=best_source,
+            epoch=epoch,
+            source_name=source_name,
+        )
+        no_improve = 0 if improved else no_improve + 1
+
+        append_phase_history(
+            history=history,
+            phase=1,
+            epoch=epoch,
+            global_epoch=epoch,
+            train_loss=train_loss,
+            train_acc=train_acc,
+            source_metrics=val_metrics,
+        )
+        msg = (
+            f"Epoch {epoch}/{phase_a_epochs} "
+            f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} "
+            f"val_top1={val_metrics['top1']:.4f} "
+            f"val_top3={val_metrics['top3']:.4f} "
+            f"val_f1={val_metrics['macro_f1']:.4f}"
+        )
+        if domain_metrics is not None:
+            msg += (
+                f"\ndomain_top1={domain_metrics['top1']:.4f} "
+                f"domain_top3={domain_metrics['top3']:.4f} "
+                f"domain_f1={domain_metrics['macro_f1']:.4f}"
+            )
+        print(msg)
+        log_phase_epoch(
+            wb_run=wb_run,
+            phase=1,
+            epoch=epoch,
+            global_epoch=epoch,
+            train_loss=train_loss,
+            train_acc=train_acc,
+            source_metrics=val_metrics,
+            optimizer=optimizer,
+        )
+        maybe_log_domain_metrics(wb_run, domain_metrics)
+        if early_patience > 0 and no_improve >= early_patience:
+            print("Early stopping in Phase A")
+            break
+
+    return best_f1, best_state, best_metrics, best_epoch, best_source, no_improve
+
+
+def run_phase_b_substage(
+    phase_label: str,
+    model: torch.nn.Module,
+    start_epoch: int,
+    stage_epochs: int,
+    phase_a_epochs: int,
+    phase_b_total: int,
+    run_epoch_fn: Callable[..., Tuple[float, float]],
+    num_classes: int,
+    use_amp: bool,
+    grad_clip: float,
+    show_progress: bool,
+    device: torch.device,
+    scaler: torch.amp.GradScaler,
+    focal_loss: nn.Module,
+    ce_loss: nn.Module,
+    use_focal: bool,
+    train_loader: DataLoader,
+    val_loader: DataLoader,
+    domain_val_loader: DataLoader,
+    use_domain_val: bool,
+    optimizer: torch.optim.Optimizer,
+    scheduler,
+    mix_cfg_b: dict,
+    history: List[Dict[str, float]],
+    wb_run: Optional["wandb.sdk.wandb_run.Run"],
+    best_f1: float,
+    best_state: Optional[dict],
+    best_metrics: Dict[str, float],
+    best_epoch: int,
+    best_source: str,
+    no_improve: int,
+    early_patience: int,
+) -> Tuple[int, float, Optional[dict], Dict[str, float], int, str, int, bool]:
+    phase_b_done = start_epoch
+    target_loader = domain_val_loader if use_domain_val else val_loader
+    for _ in range(stage_epochs):
+        train_loss, train_acc = run_epoch_fn(
+            model=model,
+            loader=train_loader,
+            optimizer=optimizer,
+            mix_cfg=mix_cfg_b,
+            num_classes=num_classes,
+            use_amp=use_amp,
+            grad_clip=grad_clip,
+            show_progress=show_progress,
+            device=device,
+            scaler=scaler,
+            focal_loss=focal_loss,
+            ce_loss=ce_loss,
+            use_focal=use_focal,
+        )
+        if scheduler:
+            scheduler.step()
+        source_metrics, _, _ = evaluate(model, target_loader, device)
+        phase_b_done += 1
+
+        (
+            best_f1,
+            best_state,
+            best_metrics,
+            best_epoch,
+            best_source,
+            improved,
+        ) = update_best_tracking(
+            model=model,
+            source_metrics=source_metrics,
+            best_f1=best_f1,
+            best_state=best_state,
+            best_metrics=best_metrics,
+            best_epoch=best_epoch,
+            best_source=best_source,
+            epoch=phase_b_done,
+            source_name="domain_val",
+        )
+        no_improve = 0 if improved else no_improve + 1
+
+        append_phase_history(
+            history=history,
+            phase=2,
+            epoch=phase_b_done,
+            global_epoch=phase_a_epochs + phase_b_done,
+            train_loss=train_loss,
+            train_acc=train_acc,
+            source_metrics=source_metrics,
+        )
+        print(
+            f"Epoch {phase_b_done}/{phase_b_total} "
+            f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} "
+            f"val_top1={source_metrics['top1']:.4f} "
+            f"val_top3={source_metrics['top3']:.4f} "
+            f"val_f1={source_metrics['macro_f1']:.4f}"
+        )
+        log_phase_epoch(
+            wb_run=wb_run,
+            phase=2,
+            epoch=phase_b_done,
+            global_epoch=phase_a_epochs + phase_b_done,
+            train_loss=train_loss,
+            train_acc=train_acc,
+            source_metrics=source_metrics,
+            optimizer=optimizer,
+        )
+        if early_patience > 0 and no_improve >= early_patience:
+            print(f"Early stopping in {phase_label}")
+            return phase_b_done, best_f1, best_state, best_metrics, best_epoch, best_source, no_improve, True
+
+    return phase_b_done, best_f1, best_state, best_metrics, best_epoch, best_source, no_improve, False
+
+
+def execute_phase_a(
+    phase_b_only: bool,
+    phase_b_cfg: dict,
+    model: torch.nn.Module,
+    models_dir: Path,
+    artifact_dir: Path,
+    device: torch.device,
+    phase_a_cfg: dict,
+    phase_a_epochs: int,
+    train_loader: DataLoader,
+    val_loader: DataLoader,
+    domain_val_loader: DataLoader,
+    use_domain_val: bool,
+    optim_cfg: dict,
+    weight_decay: float,
+    betas: Tuple[float, ...],
+    sched_cfg: dict,
+    mix_cfg_a: dict,
+    history: List[Dict[str, float]],
+    wb_run: Optional["wandb.sdk.wandb_run.Run"],
+    best_f1: float,
+    best_state: Optional[dict],
+    best_metrics: Dict[str, float],
+    best_epoch: int,
+    best_source: str,
+    no_improve: int,
+    early_patience: int,
+    num_classes: int,
+    use_amp: bool,
+    grad_clip: float,
+    show_progress: bool,
+    scaler: torch.amp.GradScaler,
+    focal_loss: nn.Module,
+    ce_loss: nn.Module,
+    use_focal: bool,
+) -> Tuple[float, Optional[dict], Dict[str, float], int, str, int]:
+    if phase_b_only:
+        phase_a_ckpt = phase_b_cfg.get("phase_a_checkpoint")
+        if not phase_a_ckpt:
+            phase_a_ckpt = models_dir / "tier1_phase_a_latest.pt"
+        phase_a_ckpt = Path(phase_a_ckpt)
+        if not phase_a_ckpt.exists():
+            raise FileNotFoundError(f"Phase A checkpoint not found: {phase_a_ckpt}")
+        state = torch.load(phase_a_ckpt, map_location=device, weights_only=True)
+        model.load_state_dict(state)
+        print(f"Phase A skipped. Loaded: {phase_a_ckpt}")
+        return best_f1, best_state, best_metrics, best_epoch, best_source, no_improve
+
+    print("Phase A: mixed dataset")
+    optimizer = make_optimizer(
+        model=model,
+        optim_cfg=optim_cfg,
+        weight_decay=weight_decay,
+        betas=betas,
+        lr=float(phase_a_cfg.get("lr", 1e-3)),
+    )
+    scheduler = make_scheduler(
+        sched_cfg=sched_cfg,
+        optimizer=optimizer,
+        epochs=int(phase_a_cfg.get("epochs", 10)),
+    )
+    (
+        best_f1,
+        best_state,
+        best_metrics,
+        best_epoch,
+        best_source,
+        no_improve,
+    ) = run_phase_a_epochs(
+        model=model,
+        phase_a_epochs=phase_a_epochs,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        domain_val_loader=domain_val_loader,
+        use_domain_val=use_domain_val,
+        run_epoch_fn=run_epoch,
+        num_classes=num_classes,
+        use_amp=use_amp,
+        grad_clip=grad_clip,
+        show_progress=show_progress,
+        device=device,
+        scaler=scaler,
+        focal_loss=focal_loss,
+        ce_loss=ce_loss,
+        use_focal=use_focal,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        mix_cfg_a=mix_cfg_a,
+        history=history,
+        wb_run=wb_run,
+        best_f1=best_f1,
+        best_state=best_state,
+        best_metrics=best_metrics,
+        best_epoch=best_epoch,
+        best_source=best_source,
+        no_improve=no_improve,
+        early_patience=early_patience,
+    )
+
+    phase_a_path = save_phase_a_latest(model, artifact_dir, models_dir)
+    print(f"Saved Phase A latest -> {phase_a_path}")
+    return best_f1, best_state, best_metrics, best_epoch, best_source, no_improve
+
+
+def evaluate_all_splits(
+    model: torch.nn.Module,
+    val_loader: DataLoader,
+    test_loader: DataLoader,
+    domain_val_loader: DataLoader,
+    use_domain_val: bool,
+    device: torch.device,
+) -> Tuple[
+    Dict[str, float],
+    List[int],
+    List[int],
+    Dict[str, float],
+    List[int],
+    List[int],
+    Optional[Dict[str, float]],
+    List[int],
+    List[int],
+]:
+    val_metrics, val_labels, val_preds = evaluate(model, val_loader, device)
+    test_metrics, test_labels, test_preds = evaluate(model, test_loader, device)
+    if not use_domain_val:
+        return (
+            val_metrics,
+            val_labels,
+            val_preds,
+            test_metrics,
+            test_labels,
+            test_preds,
+            None,
+            [],
+            [],
+        )
+    domain_metrics, domain_labels, domain_preds = evaluate(model, domain_val_loader, device)
+    return (
+        val_metrics,
+        val_labels,
+        val_preds,
+        test_metrics,
+        test_labels,
+        test_preds,
+        domain_metrics,
+        domain_labels,
+        domain_preds,
+    )
+
+
+def save_eval_outputs(
+    run_dir: Path,
+    labels: List[str],
+    val_metrics: Dict[str, float],
+    val_labels: List[int],
+    val_preds: List[int],
+    test_metrics: Dict[str, float],
+    test_labels: List[int],
+    test_preds: List[int],
+    domain_metrics: Optional[Dict[str, float]],
+    domain_labels: List[int],
+    domain_preds: List[int],
+) -> None:
+    save_confusion(val_labels, val_preds, labels, run_dir / "val_confusion.png")
+    save_confusion(test_labels, test_preds, labels, run_dir / "test_confusion.png")
+    if domain_metrics is not None:
+        save_confusion(domain_labels, domain_preds, labels, run_dir / "domain_val_confusion.png")
+
+    val_report = classification_report(
+        val_labels,
+        val_preds,
+        labels=list(range(len(labels))),
+        target_names=labels,
+        digits=4,
+        zero_division=0,
+        output_dict=True,
+    )
+    test_report = classification_report(
+        test_labels,
+        test_preds,
+        labels=list(range(len(labels))),
+        target_names=labels,
+        digits=4,
+        zero_division=0,
+        output_dict=True,
+    )
+    save_json(run_dir / "val_report.json", val_report)
+    save_json(run_dir / "test_report.json", test_report)
+    if domain_metrics is not None:
+        domain_report = classification_report(
+            domain_labels,
+            domain_preds,
+            labels=list(range(len(labels))),
+            target_names=labels,
+            digits=4,
+            zero_division=0,
+            output_dict=True,
+        )
+        save_json(run_dir / "domain_val_report.json", domain_report)
+
+    save_json(run_dir / "val_metrics.json", val_metrics)
+    save_json(run_dir / "test_metrics.json", test_metrics)
+    if domain_metrics is not None:
+        save_json(run_dir / "domain_val_metrics.json", domain_metrics)
+
+
+def copy_run_artifacts(run_dir: Path, artifact_dir: Path) -> None:
+    for name in (
+        "metrics.csv",
+        "metrics.json",
+        CURVES_FILENAME,
+        "val_confusion.png",
+        "test_confusion.png",
+        "domain_val_confusion.png",
+        "val_report.json",
+        "test_report.json",
+        "domain_val_report.json",
+        "val_metrics.json",
+        "test_metrics.json",
+        "domain_val_metrics.json",
+    ):
+        src = run_dir / name
+        if src.exists():
+            (artifact_dir / name).write_bytes(src.read_bytes())
 
 
 def export_onnx_model(
@@ -949,20 +1693,20 @@ def main() -> None:
     base_persistent = bool(data_cfg.get("persistent_workers", True))
     base_prefetch = int(data_cfg.get("prefetch_factor", 2))
 
-    def make_loader_kwargs(num_workers: int) -> Dict[str, object]:
-        kwargs: Dict[str, object] = {
-            "batch_size": base_batch_size,
-            "num_workers": num_workers,
-            "pin_memory": base_pin,
-            "worker_init_fn": seed_worker if num_workers > 0 else None,
-        }
-        if num_workers > 0:
-            kwargs["persistent_workers"] = base_persistent
-            kwargs["prefetch_factor"] = base_prefetch
-        return kwargs
-
-    train_loader_kwargs = make_loader_kwargs(base_workers)
-    eval_loader_kwargs = make_loader_kwargs(0)
+    train_loader_kwargs = make_loader_kwargs(
+        base_batch_size=base_batch_size,
+        base_pin=base_pin,
+        base_persistent=base_persistent,
+        base_prefetch=base_prefetch,
+        num_workers=base_workers,
+    )
+    eval_loader_kwargs = make_loader_kwargs(
+        base_batch_size=base_batch_size,
+        base_pin=base_pin,
+        base_persistent=base_persistent,
+        base_prefetch=base_prefetch,
+        num_workers=0,
+    )
 
     paths = cfg.get("paths", {})
     train_csv = Path(
@@ -1153,87 +1897,7 @@ def main() -> None:
     weight_decay = float(optim_cfg.get("weight_decay", 0.01))
     betas = tuple(optim_cfg.get("betas", [0.9, 0.999]))
 
-    def make_optimizer(lr: float):
-        if optim_cfg.get("name", "adamw").lower() == "adamw":
-            return torch.optim.AdamW(
-                model.parameters(),
-                lr=lr,
-                weight_decay=weight_decay,
-                betas=betas,
-            )
-        return torch.optim.Adam(
-            model.parameters(),
-            lr=lr,
-            weight_decay=weight_decay,
-            betas=betas,
-        )
-
-    def make_optimizer_split(
-        backbone_params: List[torch.nn.Parameter],
-        head_params: List[torch.nn.Parameter],
-        backbone_lr: float,
-        head_lr: float,
-    ) -> torch.optim.Optimizer:
-        split_default_lr = float(
-            optim_cfg.get("split_default_lr", optim_cfg.get("lr", 1e-3))
-        )
-        params = []
-        if backbone_params:
-            params.append(
-                {
-                    "params": backbone_params,
-                    "lr": backbone_lr,
-                    "weight_decay": weight_decay,
-                }
-            )
-        if head_params:
-            params.append(
-                {
-                    "params": head_params,
-                    "lr": head_lr,
-                    "weight_decay": weight_decay,
-                }
-            )
-        if optim_cfg.get("name", "adamw").lower() == "adamw":
-            return torch.optim.AdamW(
-                params,
-                lr=split_default_lr,
-                weight_decay=weight_decay,
-                betas=betas,
-            )
-        return torch.optim.Adam(
-            params,
-            lr=split_default_lr,
-            weight_decay=weight_decay,
-            betas=betas,
-        )
-
     sched_cfg = cfg.get("scheduler", {})
-
-    def make_scheduler(
-        optimizer: torch.optim.Optimizer,
-        epochs: int,
-        override: Optional[dict] = None,
-    ):
-        cfg_local = dict(sched_cfg)
-        if isinstance(override, dict):
-            cfg_local.update(override)
-        enabled = bool(cfg_local.get("enabled", True))
-        if not enabled:
-            return None
-        name = cfg_local.get("name", "cosine")
-        min_lr = float(cfg_local.get("min_lr", 1e-6))
-        if name == "cosine":
-            return torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer,
-                T_max=epochs,
-                eta_min=min_lr,
-            )
-        return torch.optim.lr_scheduler.StepLR(
-            optimizer,
-            step_size=max(1, epochs // 3),
-            gamma=0.1,
-        )
 
     train_cfg = cfg.get("training", {})
     use_amp = bool(train_cfg.get("use_amp", True)) and device.type == "cuda"
@@ -1249,161 +1913,51 @@ def main() -> None:
     no_improve = 0
     history: List[Dict[str, float]] = []
 
-    def run_epoch(
-        loader: DataLoader,
-        optimizer: torch.optim.Optimizer,
-        mix_cfg: dict,
-    ) -> Tuple[float, float]:
-        model.train()
-        total_loss = 0.0
-        total_correct = 0
-        total_samples = 0
-
-        iterator = loader
-        if show_progress:
-            iterator = tqdm(loader, desc="train", ncols=100)
-
-        for images, labels_batch in iterator:
-            images = images.to(device)
-            labels_batch = labels_batch.to(device)
-
-            optimizer.zero_grad(set_to_none=True)
-
-            with torch.amp.autocast(device_type="cuda", enabled=use_amp):
-                mixed_images, mixed_targets, mixed = apply_mixup_cutmix(
-                    images,
-                    labels_batch,
-                    num_classes=len(labels),
-                    mixup_cfg=mix_cfg,
-                )
-                logits = model(mixed_images)
-                if mixed:
-                    loss = soft_target_ce(logits, mixed_targets)
-                else:
-                    loss = focal_loss(logits, labels_batch) if use_focal else ce_loss(logits, labels_batch)
-
-            if use_amp:
-                scaler.scale(loss).backward()
-                if grad_clip > 0:
-                    scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                loss.backward()
-                if grad_clip > 0:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-                optimizer.step()
-
-            total_loss += loss.item() * labels_batch.size(0)
-            total_samples += labels_batch.size(0)
-            total_correct += (torch.argmax(logits, dim=1) == labels_batch).sum().item()
-
-        avg_loss = total_loss / max(total_samples, 1)
-        avg_acc = total_correct / max(total_samples, 1)
-        return avg_loss, avg_acc
-
     scaler = torch.amp.GradScaler(device="cuda", enabled=use_amp)
 
-    if phase_b_only:
-        phase_a_ckpt = phase_b.get("phase_a_checkpoint")
-        if not phase_a_ckpt:
-            phase_a_ckpt = models_dir / "tier1_phase_a_latest.pt"
-        phase_a_ckpt = Path(phase_a_ckpt)
-        if not phase_a_ckpt.exists():
-            raise FileNotFoundError(
-                f"Phase A checkpoint not found: {phase_a_ckpt}"
-            )
-        state = torch.load(phase_a_ckpt, map_location=device, weights_only=True)
-        model.load_state_dict(state)
-        print(f"Phase A skipped. Loaded: {phase_a_ckpt}")
-    else:
-        print("Phase A: mixed dataset")
-        optimizer = make_optimizer(float(phase_a.get("lr", 1e-3)))
-        scheduler = make_scheduler(optimizer, int(phase_a.get("epochs", 10)))
-
-        for epoch in range(1, phase_a_epochs + 1):
-            train_loss, train_acc = run_epoch(train_loader, optimizer, mix_cfg_a)
-            if scheduler:
-                scheduler.step()
-
-            val_metrics, _, _ = evaluate(model, val_loader, device)
-            source_metrics = val_metrics
-            domain_metrics = None
-            if use_domain_val:
-                domain_metrics, _, _ = evaluate(
-                    model, domain_val_loader, device
-                )
-                source_metrics = domain_metrics
-
-            if source_metrics["macro_f1"] > best_f1:
-                best_state = model.state_dict()
-                best_f1 = source_metrics["macro_f1"]
-                best_metrics = source_metrics
-                best_epoch = epoch
-                best_source = (
-                    "domain_val" if source_metrics is not val_metrics else "val"
-                )
-                no_improve = 0
-            else:
-                no_improve += 1
-
-            history.append(
-                {
-                    "phase": 1,
-                    "epoch": epoch,
-                    "global_epoch": epoch,
-                    "train_loss": float(train_loss),
-                    "train_acc": float(train_acc),
-                    "val_top1": float(val_metrics["top1"]),
-                    "val_top3": float(val_metrics["top3"]),
-                    "val_f1": float(val_metrics["macro_f1"]),
-                }
-            )
-            msg = (
-                f"Epoch {epoch}/{phase_a_epochs} "
-                f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} "
-                f"val_top1={val_metrics['top1']:.4f} "
-                f"val_top3={val_metrics['top3']:.4f} "
-                f"val_f1={val_metrics['macro_f1']:.4f}"
-            )
-            if domain_metrics is not None:
-                msg += (
-                    f"\ndomain_top1={domain_metrics['top1']:.4f} "
-                    f"domain_top3={domain_metrics['top3']:.4f} "
-                    f"domain_f1={domain_metrics['macro_f1']:.4f}"
-                )
-            print(msg)
-            log_wandb(
-                wb_run,
-                {
-                    "phase": 1,
-                    "epoch": epoch,
-                    "global_epoch": epoch,
-                    "train_loss": train_loss,
-                    "train_acc": train_acc,
-                    "val_top1": val_metrics["top1"],
-                    "val_top3": val_metrics["top3"],
-                    "val_f1": val_metrics["macro_f1"],
-                    "lr": optimizer.param_groups[0]["lr"],
-                },
-            )
-            if domain_metrics is not None:
-                log_wandb(
-                    wb_run,
-                    {
-                        "domain_top1": domain_metrics["top1"],
-                        "domain_top3": domain_metrics["top3"],
-                        "domain_f1": domain_metrics["macro_f1"],
-                    },
-                )
-
-            if early_patience > 0 and no_improve >= early_patience:
-                print("Early stopping in Phase A")
-                break
-
-        phase_a_path = save_phase_a_latest(model, artifact_dir, models_dir)
-        print(f"Saved Phase A latest -> {phase_a_path}")
+    (
+        best_f1,
+        best_state,
+        best_metrics,
+        best_epoch,
+        best_source,
+        no_improve,
+    ) = execute_phase_a(
+        phase_b_only=phase_b_only,
+        phase_b_cfg=phase_b,
+        model=model,
+        models_dir=models_dir,
+        artifact_dir=artifact_dir,
+        device=device,
+        phase_a_cfg=phase_a,
+        phase_a_epochs=phase_a_epochs,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        domain_val_loader=domain_val_loader,
+        use_domain_val=use_domain_val,
+        optim_cfg=optim_cfg,
+        weight_decay=weight_decay,
+        betas=betas,
+        sched_cfg=sched_cfg,
+        mix_cfg_a=mix_cfg_a,
+        history=history,
+        wb_run=wb_run,
+        best_f1=best_f1,
+        best_state=best_state,
+        best_metrics=best_metrics,
+        best_epoch=best_epoch,
+        best_source=best_source,
+        no_improve=no_improve,
+        early_patience=early_patience,
+        num_classes=len(labels),
+        use_amp=use_amp,
+        grad_clip=grad_clip,
+        show_progress=show_progress,
+        scaler=scaler,
+        focal_loss=focal_loss,
+        ce_loss=ce_loss,
+        use_focal=use_focal,
+    )
 
     print("Phase B: domain fine-tune")
     phase_b_lr = float(phase_b.get("lr", 2e-4))
@@ -1425,77 +1979,67 @@ def main() -> None:
         set_requires_grad(backbone_params, False)
         set_requires_grad(head_params, True)
         optimizer = make_optimizer_split(
+            optim_cfg=optim_cfg,
+            weight_decay=weight_decay,
+            betas=betas,
             backbone_params=[],
             head_params=head_params,
             backbone_lr=backbone_lr,
             head_lr=head_lr,
         )
         scheduler = make_scheduler(
-            optimizer,
-            min(freeze_epochs, phase_b_total),
+            sched_cfg=sched_cfg,
+            optimizer=optimizer,
+            epochs=min(freeze_epochs, phase_b_total),
             override=phase_b_sched,
         )
+        (
+            phase_b_done,
+            best_f1,
+            best_state,
+            best_metrics,
+            best_epoch,
+            best_source,
+            no_improve,
+            stopped_b1,
+        ) = run_phase_b_substage(
+            phase_label="Phase B1",
+            model=model,
+            start_epoch=phase_b_done,
+            stage_epochs=min(freeze_epochs, phase_b_total),
+            phase_a_epochs=phase_a_epochs,
+            phase_b_total=phase_b_total,
+            run_epoch_fn=run_epoch,
+            num_classes=len(labels),
+            use_amp=use_amp,
+            grad_clip=grad_clip,
+            show_progress=show_progress,
+            device=device,
+            scaler=scaler,
+            focal_loss=focal_loss,
+            ce_loss=ce_loss,
+            use_focal=use_focal,
+            train_loader=domain_train_loader,
+            val_loader=val_loader,
+            domain_val_loader=domain_val_loader,
+            use_domain_val=use_domain_val,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            mix_cfg_b=mix_cfg_b,
+            history=history,
+            wb_run=wb_run,
+            best_f1=best_f1,
+            best_state=best_state,
+            best_metrics=best_metrics,
+            best_epoch=best_epoch,
+            best_source=best_source,
+            no_improve=no_improve,
+            early_patience=early_patience,
+        )
+    else:
+        stopped_b1 = False
 
-        for epoch in range(1, min(freeze_epochs, phase_b_total) + 1):
-            train_loss, train_acc = run_epoch(
-                domain_train_loader, optimizer, mix_cfg_b
-            )
-            if scheduler:
-                scheduler.step()
-            source_metrics, _, _ = evaluate(
-                model,
-                domain_val_loader if use_domain_val else val_loader,
-                device,
-            )
-            phase_b_done += 1
-            history.append(
-                {
-                    "phase": 2,
-                    "epoch": phase_b_done,
-                    "global_epoch": phase_a_epochs + phase_b_done,
-                    "train_loss": float(train_loss),
-                    "train_acc": float(train_acc),
-                    "val_top1": float(source_metrics["top1"]),
-                    "val_top3": float(source_metrics["top3"]),
-                    "val_f1": float(source_metrics["macro_f1"]),
-                }
-            )
-            print(
-                f"Epoch {phase_b_done}/{phase_b_total} "
-                f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} "
-                f"val_top1={source_metrics['top1']:.4f} "
-                f"val_top3={source_metrics['top3']:.4f} "
-                f"val_f1={source_metrics['macro_f1']:.4f}"
-            )
-            log_wandb(
-                wb_run,
-                {
-                    "phase": 2,
-                    "epoch": phase_b_done,
-                    "global_epoch": phase_a_epochs + phase_b_done,
-                    "train_loss": train_loss,
-                    "train_acc": train_acc,
-                    "val_top1": source_metrics["top1"],
-                    "val_top3": source_metrics["top3"],
-                    "val_f1": source_metrics["macro_f1"],
-                    "lr": optimizer.param_groups[0]["lr"],
-                },
-            )
-
-            if source_metrics["macro_f1"] > best_f1:
-                best_state = model.state_dict()
-                best_f1 = source_metrics["macro_f1"]
-                best_metrics = source_metrics
-                best_epoch = phase_b_done
-                best_source = "domain_val"
-                no_improve = 0
-            else:
-                no_improve += 1
-            if early_patience > 0 and no_improve >= early_patience:
-                print("Early stopping in Phase B1")
-                break
-
-    if phase_b_done < phase_b_total:
+    if phase_b_done < phase_b_total and not stopped_b1:
         remaining = phase_b_total - phase_b_done
         print(
             f"Phase B2: full fine-tune for {remaining} epoch(s) "
@@ -1504,74 +2048,64 @@ def main() -> None:
         set_requires_grad(backbone_params, True)
         set_requires_grad(head_params, True)
         optimizer = make_optimizer_split(
+            optim_cfg=optim_cfg,
+            weight_decay=weight_decay,
+            betas=betas,
             backbone_params=backbone_params,
             head_params=head_params,
             backbone_lr=backbone_lr,
             head_lr=head_lr,
         )
-        scheduler = make_scheduler(optimizer, remaining, override=phase_b_sched)
+        scheduler = make_scheduler(
+            sched_cfg=sched_cfg,
+            optimizer=optimizer,
+            epochs=remaining,
+            override=phase_b_sched,
+        )
         no_improve = 0
-
-        for epoch in range(1, remaining + 1):
-            train_loss, train_acc = run_epoch(
-                domain_train_loader, optimizer, mix_cfg_b
-            )
-            if scheduler:
-                scheduler.step()
-
-            source_metrics, _, _ = evaluate(
-                model,
-                domain_val_loader if use_domain_val else val_loader,
-                device,
-            )
-            phase_b_done += 1
-            if source_metrics["macro_f1"] > best_f1:
-                best_state = model.state_dict()
-                best_f1 = source_metrics["macro_f1"]
-                best_metrics = source_metrics
-                best_epoch = phase_b_done
-                best_source = "domain_val"
-                no_improve = 0
-            else:
-                no_improve += 1
-
-            history.append(
-                {
-                    "phase": 2,
-                    "epoch": phase_b_done,
-                    "global_epoch": phase_a_epochs + phase_b_done,
-                    "train_loss": float(train_loss),
-                    "train_acc": float(train_acc),
-                    "val_top1": float(source_metrics["top1"]),
-                    "val_top3": float(source_metrics["top3"]),
-                    "val_f1": float(source_metrics["macro_f1"]),
-                }
-            )
-            print(
-                f"Epoch {phase_b_done}/{phase_b_total} "
-                f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} "
-                f"val_top1={source_metrics['top1']:.4f} "
-                f"val_top3={source_metrics['top3']:.4f} "
-                f"val_f1={source_metrics['macro_f1']:.4f}"
-            )
-            log_wandb(
-                wb_run,
-                {
-                    "phase": 2,
-                    "epoch": phase_b_done,
-                    "global_epoch": phase_a_epochs + phase_b_done,
-                    "train_loss": train_loss,
-                    "train_acc": train_acc,
-                    "val_top1": source_metrics["top1"],
-                    "val_top3": source_metrics["top3"],
-                    "val_f1": source_metrics["macro_f1"],
-                    "lr": optimizer.param_groups[0]["lr"],
-                },
-            )
-
-            if early_patience > 0 and no_improve >= early_patience:
-                print("Early stopping in Phase B2")
-                break
+        (
+            phase_b_done,
+            best_f1,
+            best_state,
+            best_metrics,
+            best_epoch,
+            best_source,
+            no_improve,
+            _,
+        ) = run_phase_b_substage(
+            phase_label="Phase B2",
+            model=model,
+            start_epoch=phase_b_done,
+            stage_epochs=remaining,
+            phase_a_epochs=phase_a_epochs,
+            phase_b_total=phase_b_total,
+            run_epoch_fn=run_epoch,
+            num_classes=len(labels),
+            use_amp=use_amp,
+            grad_clip=grad_clip,
+            show_progress=show_progress,
+            device=device,
+            scaler=scaler,
+            focal_loss=focal_loss,
+            ce_loss=ce_loss,
+            use_focal=use_focal,
+            train_loader=domain_train_loader,
+            val_loader=val_loader,
+            domain_val_loader=domain_val_loader,
+            use_domain_val=use_domain_val,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            mix_cfg_b=mix_cfg_b,
+            history=history,
+            wb_run=wb_run,
+            best_f1=best_f1,
+            best_state=best_state,
+            best_metrics=best_metrics,
+            best_epoch=best_epoch,
+            best_source=best_source,
+            no_improve=no_improve,
+            early_patience=early_patience,
+        )
 
     if best_state is None:
         best_state = model.state_dict()
@@ -1580,85 +2114,40 @@ def main() -> None:
     torch.save(best_state, best_path)
 
     model.load_state_dict(best_state)
-    val_metrics, val_labels, val_preds = evaluate(
-        model, val_loader, device
-    )
-    test_metrics, test_labels, test_preds = evaluate(
-        model, test_loader, device
-    )
-    domain_metrics = None
-    domain_labels: List[int] = []
-    domain_preds: List[int] = []
-    if use_domain_val:
-        domain_metrics, domain_labels, domain_preds = evaluate(
-            model, domain_val_loader, device
-        )
-
-    save_confusion(val_labels, val_preds, labels, run_dir / "val_confusion.png")
-    save_confusion(test_labels, test_preds, labels, run_dir / "test_confusion.png")
-    if domain_metrics is not None:
-        save_confusion(
-            domain_labels,
-            domain_preds,
-            labels,
-            run_dir / "domain_val_confusion.png",
-        )
-
-    val_report = classification_report(
+    (
+        val_metrics,
         val_labels,
         val_preds,
-        labels=list(range(len(labels))),
-        target_names=labels,
-        digits=4,
-        zero_division=0,
-        output_dict=True,
-    )
-    test_report = classification_report(
+        test_metrics,
         test_labels,
         test_preds,
-        labels=list(range(len(labels))),
-        target_names=labels,
-        digits=4,
-        zero_division=0,
-        output_dict=True,
+        domain_metrics,
+        domain_labels,
+        domain_preds,
+    ) = evaluate_all_splits(
+        model=model,
+        val_loader=val_loader,
+        test_loader=test_loader,
+        domain_val_loader=domain_val_loader,
+        use_domain_val=use_domain_val,
+        device=device,
     )
-    save_json(run_dir / "val_report.json", val_report)
-    save_json(run_dir / "test_report.json", test_report)
-    if domain_metrics is not None:
-        domain_report = classification_report(
-            domain_labels,
-            domain_preds,
-            labels=list(range(len(labels))),
-            target_names=labels,
-            digits=4,
-            zero_division=0,
-            output_dict=True,
-        )
-        save_json(run_dir / "domain_val_report.json", domain_report)
-
-    save_json(run_dir / "val_metrics.json", val_metrics)
-    save_json(run_dir / "test_metrics.json", test_metrics)
-    if domain_metrics is not None:
-        save_json(run_dir / "domain_val_metrics.json", domain_metrics)
+    save_eval_outputs(
+        run_dir=run_dir,
+        labels=labels,
+        val_metrics=val_metrics,
+        val_labels=val_labels,
+        val_preds=val_preds,
+        test_metrics=test_metrics,
+        test_labels=test_labels,
+        test_preds=test_preds,
+        domain_metrics=domain_metrics,
+        domain_labels=domain_labels,
+        domain_preds=domain_preds,
+    )
 
     save_history(history, run_dir)
-    for name in (
-        "metrics.csv",
-        "metrics.json",
-        "curves.png",
-        "val_confusion.png",
-        "test_confusion.png",
-        "domain_val_confusion.png",
-        "val_report.json",
-        "test_report.json",
-        "domain_val_report.json",
-        "val_metrics.json",
-        "test_metrics.json",
-        "domain_val_metrics.json",
-    ):
-        src = run_dir / name
-        if src.exists():
-            (artifact_dir / name).write_bytes(src.read_bytes())
+    copy_run_artifacts(run_dir, artifact_dir)
 
     opset = int(cfg.get("onnx", {}).get("opset", 17))
     infer_cfg = cfg.get("infer", {}) or {}

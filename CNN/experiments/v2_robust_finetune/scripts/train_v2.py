@@ -1115,7 +1115,12 @@ def main() -> None:
                 weight_decay=weight_decay,
                 betas=betas,
             )
-        return torch.optim.Adam(model.parameters(), lr=lr)
+        return torch.optim.Adam(
+        model.parameters(),
+        lr=lr,
+        weight_decay=weight_decay,
+        betas=betas,
+    )
 
     def make_optimizer_split(
         backbone_params: List[torch.nn.Parameter],

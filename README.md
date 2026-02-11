@@ -41,13 +41,3 @@ Compatibility wrappers remain at repo root for CI/deploy stability:
 
 Legacy source code is preserved. Generated outputs are ignored by `.gitignore`.
 
-## Common Commands
-
-```bash
-# Run forecast API locally
-uvicorn main:app --reload
-
-# Run unit tests used by CI
-pytest test_main.py CNN/shared/tests CNN/clf_7cats_tier1/tests CNN/services/tests
-
-```

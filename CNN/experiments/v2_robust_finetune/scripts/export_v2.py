@@ -37,6 +37,22 @@ IMAGE_EXTS = {
 }
 
 
+def load_torch_weights(path: Path, map_location: str = "cpu"):
+    """Load state dict with safe defaults and backward compatibility."""
+    try:
+        return torch.load(  # nosec B614 - loading trusted internal training artifact
+            path,
+            map_location=map_location,
+            weights_only=True,
+        )
+    except TypeError:
+        # Older torch versions do not support weights_only.
+        return torch.load(  # nosec B614 - loading trusted internal training artifact
+            path,
+            map_location=map_location,
+        )
+
+
 def load_yaml(path: Path) -> dict:
     if not path.exists():
         raise FileNotFoundError(f"Missing config: {path}")
@@ -140,7 +156,7 @@ def main() -> None:
     img_size = int(model_cfg.get("img_size", 224))
 
     model = timm.create_model(backbone, pretrained=False, num_classes=len(labels))
-    state = torch.load(checkpoint, map_location="cpu")
+    state = load_torch_weights(checkpoint, map_location="cpu")
     model.load_state_dict(state)
     model.eval()
 

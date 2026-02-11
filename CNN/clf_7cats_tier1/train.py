@@ -99,7 +99,7 @@ class CsvDataset(Dataset):
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int]:
         if not self.items:
             raise ValueError("Dataset is empty after filtering bad images.")
-        for attempt in range(max(1, self.max_retry)):
+        for _ in range(max(1, self.max_retry)):
             path, label = self.items[idx]
             try:
                 image = Image.open(path).convert("RGBA").convert("RGB")

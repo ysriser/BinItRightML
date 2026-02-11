@@ -57,6 +57,9 @@ IMAGE_EXTS = {
     ".heif",
 }
 LOGGER = logging.getLogger(__name__)
+INFER_CONFIG_FILENAME = "infer_config.json"
+LABEL_MAP_FILENAME = "label_map.json"
+NUMPY_RNG = np.random.default_rng()
 
 
 @dataclass
@@ -66,8 +69,10 @@ class DomainSplit:
 
 
 def set_seed(seed: int) -> None:
+    global NUMPY_RNG
     random.seed(seed)
     np.random.seed(seed)
+    NUMPY_RNG = np.random.default_rng(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
@@ -511,13 +516,19 @@ class FocalCrossEntropy(nn.Module):
         focal_weight = (1.0 - pt) ** self.gamma
         return (focal_weight * ce_loss).mean()
 
-def rand_bbox(width: int, height: int, lam: float) -> Tuple[int, int, int, int]:
+def rand_bbox(
+    width: int,
+    height: int,
+    lam: float,
+    rng: Optional[np.random.Generator] = None,
+) -> Tuple[int, int, int, int]:
+    active_rng = rng or NUMPY_RNG
     cut_ratio = np.sqrt(1.0 - lam)
     cut_w = int(width * cut_ratio)
     cut_h = int(height * cut_ratio)
 
-    cx = np.random.randint(width)
-    cy = np.random.randint(height)
+    cx = int(active_rng.integers(width))
+    cy = int(active_rng.integers(height))
 
     x1 = np.clip(cx - cut_w // 2, 0, width)
     y1 = np.clip(cy - cut_h // 2, 0, height)
@@ -531,35 +542,39 @@ def apply_mixup_cutmix(
     labels: torch.Tensor,
     num_classes: int,
     mixup_cfg: dict,
+    rng: Optional[np.random.Generator] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, bool]:
+    active_rng = rng or NUMPY_RNG
     mixup_alpha = float(mixup_cfg.get("mixup_alpha", 0.0))
     mixup_p = float(mixup_cfg.get("mixup_p", 0.0))
     cutmix_alpha = float(mixup_cfg.get("cutmix_alpha", 0.0))
     cutmix_p = float(mixup_cfg.get("cutmix_p", 0.0))
 
-    use_mixup = mixup_alpha > 0 and random.random() < mixup_p
-    use_cutmix = cutmix_alpha > 0 and random.random() < cutmix_p
+    use_mixup = mixup_alpha > 0 and float(active_rng.random()) < mixup_p
+    use_cutmix = cutmix_alpha > 0 and float(active_rng.random()) < cutmix_p
 
     if not use_mixup and not use_cutmix:
         return images, labels, False
 
     if use_mixup and use_cutmix:
-        use_mixup = random.random() < 0.5
-        use_cutmix = not use_mixup
+        if float(active_rng.random()) < 0.5:
+            use_cutmix = False
+        else:
+            use_mixup = False
 
     batch_size, _, height, width = images.size()
     perm = torch.randperm(batch_size).to(images.device)
 
     if use_mixup:
-        lam = np.random.beta(mixup_alpha, mixup_alpha)
+        lam = float(active_rng.beta(mixup_alpha, mixup_alpha))
         mixed = lam * images + (1 - lam) * images[perm]
         targets = one_hot(labels, num_classes)
         targets_perm = one_hot(labels[perm], num_classes)
         mixed_targets = lam * targets + (1 - lam) * targets_perm
         return mixed, mixed_targets, True
 
-    lam = np.random.beta(cutmix_alpha, cutmix_alpha)
-    x1, y1, x2, y2 = rand_bbox(width, height, lam)
+    lam = float(active_rng.beta(cutmix_alpha, cutmix_alpha))
+    x1, y1, x2, y2 = rand_bbox(width, height, lam, active_rng)
     images[:, :, y1:y2, x1:x2] = images[perm, :, y1:y2, x1:x2]
     lam_adjusted = 1 - ((x2 - x1) * (y2 - y1) / (width * height))
     targets = one_hot(labels, num_classes)
@@ -572,7 +587,7 @@ def evaluate(
     model: torch.nn.Module,
     loader: DataLoader,
     device: torch.device,
-    class_names: List[str],
+    class_names: Optional[List[str]] = None,
     topk: int = 3,
 ) -> Tuple[Dict[str, float], List[int], List[int]]:
     model.eval()
@@ -589,11 +604,14 @@ def evaluate(
             logits = model(images)
             probs = torch.softmax(logits, dim=1)
             preds = torch.argmax(probs, dim=1)
+            num_classes = probs.size(1)
+            if class_names:
+                num_classes = min(num_classes, len(class_names))
 
             total += labels.size(0)
             top1_correct += (preds == labels).sum().item()
 
-            top_vals, top_idxs = torch.topk(probs, k=min(topk, probs.size(1)), dim=1)
+            _, top_idxs = torch.topk(probs, k=min(topk, num_classes), dim=1)
             for i in range(labels.size(0)):
                 if labels[i].item() in top_idxs[i].tolist():
                     topk_correct += 1
@@ -840,8 +858,8 @@ def export_onnx_model(
         "conf_threshold": infer_cfg.get("conf_threshold", 0.75),
         "margin_threshold": infer_cfg.get("margin_threshold", 0.15),
     }
-    save_json(artifact_dir / "infer_config.json", infer_out)
-    save_json(artifact_dir / "label_map.json", {"labels": labels})
+    save_json(artifact_dir / INFER_CONFIG_FILENAME, infer_out)
+    save_json(artifact_dir / LABEL_MAP_FILENAME, {"labels": labels})
     return onnx_path
 
 
@@ -853,8 +871,8 @@ def update_models_dir(
     mapping = {
         "best.pt": "tier1_best.pt",
         "model.onnx": "tier1.onnx",
-        "infer_config.json": "infer_config.json",
-        "label_map.json": "label_map.json",
+        INFER_CONFIG_FILENAME: INFER_CONFIG_FILENAME,
+        LABEL_MAP_FILENAME: LABEL_MAP_FILENAME,
     }
     for src_name, dst_name in mapping.items():
         src = artifact_dir / src_name
@@ -1286,30 +1304,6 @@ def main() -> None:
 
     scaler = torch.amp.GradScaler(device="cuda", enabled=use_amp)
 
-    def evaluate_and_update(
-        loader: DataLoader,
-        source: str,
-        epoch: int,
-    ) -> Dict[str, float]:
-        nonlocal best_f1, best_state, best_metrics, best_epoch, best_source, no_improve
-        metrics, labels_out, preds_out = evaluate(model, loader, device, labels)
-        if metrics["macro_f1"] > best_f1:
-            best_f1 = metrics["macro_f1"]
-            best_state = model.state_dict()
-            best_metrics = metrics
-            best_epoch = epoch
-            best_source = source
-            no_improve = 0
-            save_confusion(
-                labels_out,
-                preds_out,
-                labels,
-                run_dir / f"{source}_confusion.png",
-            )
-        else:
-            no_improve += 1
-        return metrics
-
     if phase_b_only:
         phase_a_ckpt = phase_b.get("phase_a_checkpoint")
         if not phase_a_ckpt:
@@ -1332,12 +1326,12 @@ def main() -> None:
             if scheduler:
                 scheduler.step()
 
-            val_metrics, _, _ = evaluate(model, val_loader, device, labels)
+            val_metrics, _, _ = evaluate(model, val_loader, device)
             source_metrics = val_metrics
             domain_metrics = None
             if use_domain_val:
                 domain_metrics, _, _ = evaluate(
-                    model, domain_val_loader, device, labels
+                    model, domain_val_loader, device
                 )
                 source_metrics = domain_metrics
 
@@ -1451,7 +1445,6 @@ def main() -> None:
                 model,
                 domain_val_loader if use_domain_val else val_loader,
                 device,
-                labels,
             )
             phase_b_done += 1
             history.append(
@@ -1529,7 +1522,6 @@ def main() -> None:
                 model,
                 domain_val_loader if use_domain_val else val_loader,
                 device,
-                labels,
             )
             phase_b_done += 1
             if source_metrics["macro_f1"] > best_f1:
@@ -1588,17 +1580,17 @@ def main() -> None:
 
     model.load_state_dict(best_state)
     val_metrics, val_labels, val_preds = evaluate(
-        model, val_loader, device, labels
+        model, val_loader, device
     )
     test_metrics, test_labels, test_preds = evaluate(
-        model, test_loader, device, labels
+        model, test_loader, device
     )
     domain_metrics = None
     domain_labels: List[int] = []
     domain_preds: List[int] = []
     if use_domain_val:
         domain_metrics, domain_labels, domain_preds = evaluate(
-            model, domain_val_loader, device, labels
+            model, domain_val_loader, device
         )
 
     save_confusion(val_labels, val_preds, labels, run_dir / "val_confusion.png")

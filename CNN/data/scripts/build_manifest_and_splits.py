@@ -16,7 +16,7 @@ import os
 import random
 import shutil
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Tuple
 
 import yaml
@@ -320,7 +320,7 @@ def main() -> None:
         rng.shuffle(split_rows[split])
 
     # Write manifest.
-    run_name = args.run_name or datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    run_name = args.run_name or datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     run_dir = args.splits_dir / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = args.manifest or (run_dir / "manifest.csv")

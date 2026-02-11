@@ -6,7 +6,7 @@ import csv
 import hashlib
 import json
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING
 
@@ -298,7 +298,7 @@ def build_output(
             "std": cfg.std,
             "resize_scale": cfg.resize_scale,
             "interpolation": cfg.interpolation,
-            "created_at": datetime.utcnow().isoformat() + "Z",
+            "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "total": len(records),
         },
         "images": records,

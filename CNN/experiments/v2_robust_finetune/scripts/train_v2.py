@@ -59,7 +59,8 @@ IMAGE_EXTS = {
 LOGGER = logging.getLogger(__name__)
 INFER_CONFIG_FILENAME = "infer_config.json"
 LABEL_MAP_FILENAME = "label_map.json"
-NUMPY_RNG = np.random.default_rng()
+DEFAULT_SEED = 42
+NUMPY_RNG = np.random.default_rng(DEFAULT_SEED)
 
 
 @dataclass

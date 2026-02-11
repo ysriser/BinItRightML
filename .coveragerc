@@ -1,0 +1,16 @@
+[run]
+branch = True
+source = .
+omit =
+    */tests/*
+    */test_*.py
+    */__pycache__/*
+    */.pytest_cache/*
+    */.ruff_cache/*
+    */.mypy_cache/*
+    */.venv/*
+    legacy/*
+
+[report]
+skip_empty = True
+show_missing = True

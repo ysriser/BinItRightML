@@ -1,16 +1,16 @@
-﻿"""Evaluate v3 model on hardset with temperature calibration and reject-threshold sweep."""
+"""Evaluate v3 model on hardset with temperature calibration and reject-threshold sweep."""
 
 from __future__ import annotations
 
 import argparse
 import csv
 import json
-import math
+
 import random
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
 import onnxruntime as ort

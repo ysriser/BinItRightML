@@ -4,7 +4,6 @@ import os
 import pickle
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 app = FastAPI(root_path="/python")
 

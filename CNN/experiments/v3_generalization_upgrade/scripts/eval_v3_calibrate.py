@@ -281,6 +281,7 @@ def sweep_thresholds(
         float(sweep_cfg.get("margin_max", 0.30)) + 1e-9,
         float(sweep_cfg.get("margin_step", 0.03)),
     )
+    
     strict_per_class = sweep_cfg.get("strict_per_class", {}) or {}
     target = float(sweep_cfg.get("target_selective_acc", 0.95))
 
@@ -296,7 +297,7 @@ def sweep_thresholds(
                 margin=float(round(margin, 4)),
                 strict_per_class=strict_per_class,
             )
-            keep_idx = np.where(~escalated)[0]
+            keep_idx = np.nonzero(~escalated)[0]
             coverage = float(len(keep_idx) / len(labels)) if len(labels) else 0.0
             selective_acc = (
                 float(np.mean(pred_after[keep_idx] == labels[keep_idx])) if len(keep_idx) else 0.0

@@ -192,70 +192,38 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
-    args = parse_args()
-
-    decision, multicrop, onnx_infer, preprocess, repo_root = load_shared_modules()
-    infer_cfg = load_yaml(resolve_path(str(args.config), repo_root))
-    infer_cfg = merge_paths(
-        infer_cfg,
-        load_yaml(resolve_path(str(args.paths), repo_root)),
-    )
-
+def resolve_model_paths(infer_cfg: dict, repo_root: Path) -> Tuple[Path, Path, Path]:
     model_paths = infer_cfg.get("models", {})
-    onnx_path = resolve_path(
-        str(model_paths.get("onnx", "CNN/models/tier1.onnx")),
-        repo_root,
-    )
+    onnx_path = resolve_path(str(model_paths.get("onnx", "CNN/models/tier1.onnx")), repo_root)
     label_map_path = resolve_path(
         str(model_paths.get("label_map", "CNN/models/label_map.json")),
         repo_root,
     )
     infer_json_path = resolve_path(
-        str(model_paths.get("infer_config", "CNN/models/infer_config.json")), repo_root
+        str(model_paths.get("infer_config", "CNN/models/infer_config.json")),
+        repo_root,
     )
+    return onnx_path, label_map_path, infer_json_path
 
-    label_map = load_json(label_map_path)
-    labels = preprocess.resolve_labels(label_map)
-    preprocess.validate_labels(labels)
 
-    infer_json = load_json(infer_json_path)
-    img_size = int(infer_json.get("img_size", 224))
-    mean, std = preprocess.resolve_mean_std(infer_json)
+def resolve_data_dir(args: argparse.Namespace, infer_cfg: dict, repo_root: Path) -> Path:
+    if args.data_dir is not None:
+        return resolve_path(str(args.data_dir), repo_root)
+    default_dir = infer_cfg.get("data", {}).get("g3_sgdata", "CNN/data/G3_SGData")
+    return resolve_path(str(default_dir), repo_root)
 
-    output_cfg = infer_cfg.get("output", {}) or {}
-    topk = int(output_cfg.get("topk", infer_json.get("topk", 3)))
 
-    thresholds_v1 = infer_cfg.get("thresholds", {}) or {}
-    thresholds_v1["topk"] = topk
-
-    thresholds_baseline = {
-        "conf": float(infer_json.get("conf_threshold", 0.75)),
-        "margin": float(infer_json.get("margin_threshold", 0.15)),
-        "reject_to_other": True,
-        "topk": topk,
-    }
-
-    multicrop_cfg = infer_cfg.get("multicrop", {}) or {}
-
-    data_dir = args.data_dir
-    if data_dir is None:
-        data_dir = Path(
-            infer_cfg.get("data", {}).get("g3_sgdata", "CNN/data/G3_SGData")
-        )
-    data_dir = resolve_path(str(data_dir), repo_root)
-
-    items = resolve_items(data_dir, labels)
-    if args.max_images and args.max_images > 0:
-        items = items[: args.max_images]
-    if not items:
-        raise ValueError("No images found in data-dir")
-
-    onnx_model = onnx_infer.OnnxInfer(onnx_path)
-
-    def infer_fn(batch: np.ndarray, _: str | None = None) -> np.ndarray:
-        return onnx_model.run(batch)
-
+def run_inference_for_items(
+    items: Sequence[Tuple[Path, str]],
+    preprocess,
+    decision,
+    multicrop,
+    infer_fn,
+    img_size: int,
+    mean,
+    std,
+    multicrop_cfg: dict,
+) -> Tuple[List[str], List[np.ndarray], List[np.ndarray], List[str]]:
     true_labels: List[str] = []
     probs_baseline: List[np.ndarray] = []
     probs_v1: List[np.ndarray] = []
@@ -292,29 +260,33 @@ def main() -> None:
         probs_baseline.append(base_probs)
         probs_v1.append(v1_probs)
 
-    output_dir = Path(
-        infer_cfg.get("outputs", {}).get(
-            "base_dir",
-            "CNN/experiments/v1_multicrop_reject/outputs",
-        )
-    )
-    output_dir = resolve_path(str(output_dir), repo_root)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    return true_labels, probs_baseline, probs_v1, skipped
 
-    baseline_metrics = evaluate_probs(
-        probs_baseline,
-        true_labels,
-        labels,
-        thresholds_baseline,
-        decision,
-    )
-    v1_metrics = evaluate_probs(probs_v1, true_labels, labels, thresholds_v1, decision)
 
+def should_replace_best_threshold(candidate: Dict[str, float], best: Dict[str, float] | None) -> bool:
+    if candidate["selective_acc"] < 0.95:
+        return False
+    if best is None:
+        return True
+    if candidate["coverage"] > best["coverage"]:
+        return True
+    if candidate["coverage"] < best["coverage"]:
+        return False
+    return candidate["selective_acc"] > best["selective_acc"]
+
+
+def sweep_v1_thresholds(
+    probs_v1: Sequence[np.ndarray],
+    true_labels: Sequence[str],
+    labels: Sequence[str],
+    thresholds_v1: Dict[str, Any],
+    decision_module,
+) -> Tuple[List[Dict[str, float]], Dict[str, float] | None]:
     sweep_rows: List[Dict[str, float]] = []
     conf_values = [round(x, 2) for x in np.arange(0.50, 0.951, 0.05)]
     margin_values = [round(x, 2) for x in np.arange(0.05, 0.301, 0.05)]
+    best_choice: Dict[str, float] | None = None
 
-    best_choice = None
     for conf_th in conf_values:
         for margin_th in margin_values:
             sweep_thresholds = dict(thresholds_v1)
@@ -325,7 +297,7 @@ def main() -> None:
                 true_labels,
                 labels,
                 sweep_thresholds,
-                decision,
+                decision_module,
             )
             row = {
                 "conf_threshold": conf_th,
@@ -334,31 +306,19 @@ def main() -> None:
                 "selective_acc": metrics["selective_acc"],
             }
             sweep_rows.append(row)
-
-            meets = metrics["selective_acc"] >= 0.95
-            if meets:
-                if best_choice is None:
-                    best_choice = row
-                else:
-                    if row["coverage"] > best_choice["coverage"]:
-                        best_choice = row
-                    elif row["coverage"] == best_choice["coverage"] and row[
-                        "selective_acc"
-                    ] > best_choice["selective_acc"]:
-                        best_choice = row
+            if should_replace_best_threshold(row, best_choice):
+                best_choice = row
 
     if best_choice is None and sweep_rows:
         best_choice = max(sweep_rows, key=lambda r: r["selective_acc"])
+    return sweep_rows, best_choice
 
-    output_json = {
-        "labels": labels,
-        "total": len(true_labels),
-        "skipped": len(skipped),
-        "baseline": baseline_metrics,
-        "v1": v1_metrics,
-        "recommended_thresholds": best_choice,
-    }
 
+def write_eval_outputs(
+    output_dir: Path,
+    output_json: Dict[str, Any],
+    sweep_rows: Sequence[Dict[str, float]],
+) -> Tuple[Path, Path]:
     json_path = output_dir / "eval_custom_v1.json"
     csv_path = output_dir / "eval_custom_v1.csv"
 
@@ -378,6 +338,105 @@ def main() -> None:
         writer.writeheader()
         for row in sweep_rows:
             writer.writerow(row)
+    return json_path, csv_path
+
+
+def main() -> None:
+    args = parse_args()
+
+    decision, multicrop, onnx_infer, preprocess, repo_root = load_shared_modules()
+    infer_cfg = load_yaml(resolve_path(str(args.config), repo_root))
+    infer_cfg = merge_paths(
+        infer_cfg,
+        load_yaml(resolve_path(str(args.paths), repo_root)),
+    )
+
+    onnx_path, label_map_path, infer_json_path = resolve_model_paths(infer_cfg, repo_root)
+
+    label_map = load_json(label_map_path)
+    labels = preprocess.resolve_labels(label_map)
+    preprocess.validate_labels(labels)
+
+    infer_json = load_json(infer_json_path)
+    img_size = int(infer_json.get("img_size", 224))
+    mean, std = preprocess.resolve_mean_std(infer_json)
+
+    output_cfg = infer_cfg.get("output", {}) or {}
+    topk = int(output_cfg.get("topk", infer_json.get("topk", 3)))
+
+    thresholds_v1 = infer_cfg.get("thresholds", {}) or {}
+    thresholds_v1["topk"] = topk
+
+    thresholds_baseline = {
+        "conf": float(infer_json.get("conf_threshold", 0.75)),
+        "margin": float(infer_json.get("margin_threshold", 0.15)),
+        "reject_to_other": True,
+        "topk": topk,
+    }
+
+    multicrop_cfg = infer_cfg.get("multicrop", {}) or {}
+
+    data_dir = resolve_data_dir(args, infer_cfg, repo_root)
+
+    items = resolve_items(data_dir, labels)
+    if args.max_images and args.max_images > 0:
+        items = items[: args.max_images]
+    if not items:
+        raise ValueError("No images found in data-dir")
+
+    onnx_model = onnx_infer.OnnxInfer(onnx_path)
+
+    def infer_fn(batch: np.ndarray, _: str | None = None) -> np.ndarray:
+        return onnx_model.run(batch)
+
+    true_labels, probs_baseline, probs_v1, skipped = run_inference_for_items(
+        items=items,
+        preprocess=preprocess,
+        decision=decision,
+        multicrop=multicrop,
+        infer_fn=infer_fn,
+        img_size=img_size,
+        mean=mean,
+        std=std,
+        multicrop_cfg=multicrop_cfg,
+    )
+
+    output_dir = Path(
+        infer_cfg.get("outputs", {}).get(
+            "base_dir",
+            "CNN/experiments/v1_multicrop_reject/outputs",
+        )
+    )
+    output_dir = resolve_path(str(output_dir), repo_root)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    baseline_metrics = evaluate_probs(
+        probs_baseline,
+        true_labels,
+        labels,
+        thresholds_baseline,
+        decision,
+    )
+    v1_metrics = evaluate_probs(probs_v1, true_labels, labels, thresholds_v1, decision)
+
+    sweep_rows, best_choice = sweep_v1_thresholds(
+        probs_v1=probs_v1,
+        true_labels=true_labels,
+        labels=labels,
+        thresholds_v1=thresholds_v1,
+        decision_module=decision,
+    )
+
+    output_json = {
+        "labels": labels,
+        "total": len(true_labels),
+        "skipped": len(skipped),
+        "baseline": baseline_metrics,
+        "v1": v1_metrics,
+        "recommended_thresholds": best_choice,
+    }
+
+    json_path, csv_path = write_eval_outputs(output_dir, output_json, sweep_rows)
 
     print(f"Saved: {json_path}")
     print(f"Saved: {csv_path}")

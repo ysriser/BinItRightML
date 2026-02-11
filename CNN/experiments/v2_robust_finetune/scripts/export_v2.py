@@ -109,6 +109,66 @@ def build_transform(img_size: int, mean: List[float], std: List[float]):
     )
 
 
+def resolve_artifact_dir(args: argparse.Namespace, output_root: Path) -> Path:
+    if args.artifact_dir:
+        return args.artifact_dir
+    last_run = output_root / "last_run.txt"
+    if not last_run.exists():
+        raise FileNotFoundError("last_run.txt not found; provide --artifact-dir")
+    return Path(last_run.read_text(encoding="utf-8").strip())
+
+
+def resolve_sanity_samples(
+    args: argparse.Namespace,
+    paths: dict,
+    sanity_limit: int,
+) -> List[Path]:
+    sanity_path = args.sanity_images
+    if sanity_path is not None:
+        if sanity_path.is_dir():
+            return list_images(sanity_path, sanity_limit)
+        if sanity_path.is_file():
+            return list_images_from_csv(sanity_path, sanity_limit)
+        return []
+
+    g3_dir = Path(paths.get("g3_data_dir", "CNN/data/hardset"))
+    if g3_dir.exists():
+        return list_images(g3_dir, sanity_limit)
+
+    train_csv = Path(paths.get("train_csv", ""))
+    if train_csv.exists():
+        return list_images_from_csv(train_csv, sanity_limit)
+    return []
+
+
+def resolve_ort_providers(prefer_cuda: bool) -> List[str]:
+    if prefer_cuda and "CUDAExecutionProvider" in ort.get_available_providers():
+        return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    return ["CPUExecutionProvider"]
+
+
+def run_onnx_sanity(
+    samples: List[Path],
+    transform,
+    session: ort.InferenceSession,
+    output_name: str,
+    input_name: str,
+    expected_classes: int,
+) -> None:
+    if not samples:
+        print("No sanity images found; skipping ONNX sanity check.")
+        return
+
+    for path in samples:
+        with Image.open(path) as opened:
+            img = opened.convert("RGB")
+        tensor = transform(img).unsqueeze(0).numpy().astype(np.float32)
+        outputs = session.run([output_name], {input_name: tensor})
+        logits = outputs[0]
+        if logits.shape[-1] != expected_classes:
+            raise ValueError("ONNX output size mismatch")
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Export robust fine-tune v2")
     p.add_argument(
@@ -135,13 +195,7 @@ def main() -> None:
         )
     )
 
-    if args.artifact_dir:
-        artifact_dir = args.artifact_dir
-    else:
-        last_run = output_root / "last_run.txt"
-        if not last_run.exists():
-            raise FileNotFoundError("last_run.txt not found; provide --artifact-dir")
-        artifact_dir = Path(last_run.read_text(encoding="utf-8").strip())
+    artifact_dir = resolve_artifact_dir(args, output_root)
 
     checkpoint = args.checkpoint or (artifact_dir / "best.pt")
     if not checkpoint.exists():
@@ -191,43 +245,23 @@ def main() -> None:
     save_json(artifact_dir / "label_map.json", {"labels": labels})
 
     sanity_limit = int(cfg.get("onnx", {}).get("sanity_images", 5))
-    sanity_path = args.sanity_images
-    samples: List[Path] = []
-
-    if sanity_path is not None:
-        if sanity_path.is_dir():
-            samples = list_images(sanity_path, sanity_limit)
-        elif sanity_path.is_file():
-            samples = list_images_from_csv(sanity_path, sanity_limit)
-    else:
-        g3_dir = Path(paths.get("g3_data_dir", "CNN/data/hardset"))
-        if g3_dir.exists():
-            samples = list_images(g3_dir, sanity_limit)
-        else:
-            train_csv = Path(paths.get("train_csv", ""))
-            if train_csv.exists():
-                samples = list_images_from_csv(train_csv, sanity_limit)
+    samples = resolve_sanity_samples(args, paths, sanity_limit)
     transform = build_transform(img_size, mean, std)
 
-    providers = ["CPUExecutionProvider"]
-    if args.prefer_cuda and "CUDAExecutionProvider" in ort.get_available_providers():
-        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    providers = resolve_ort_providers(args.prefer_cuda)
 
     session = ort.InferenceSession(str(onnx_path), providers=providers)
     input_name = session.get_inputs()[0].name
     output_name = session.get_outputs()[0].name
 
-    if not samples:
-        print("No sanity images found; skipping ONNX sanity check.")
-    else:
-        for path in samples:
-            with Image.open(path) as opened:
-                img = opened.convert("RGB")
-            tensor = transform(img).unsqueeze(0).numpy().astype(np.float32)
-            outputs = session.run([output_name], {input_name: tensor})
-            logits = outputs[0]
-            if logits.shape[-1] != len(labels):
-                raise ValueError("ONNX output size mismatch")
+    run_onnx_sanity(
+        samples=samples,
+        transform=transform,
+        session=session,
+        output_name=output_name,
+        input_name=input_name,
+        expected_classes=len(labels),
+    )
 
     print(f"Exported ONNX -> {onnx_path}")
     print(f"Sanity checked {len(samples)} images")

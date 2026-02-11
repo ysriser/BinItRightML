@@ -115,6 +115,427 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def init_collection_state(
+    final_labels: List[str],
+) -> Tuple[
+    List[str],
+    List[Dict[str, str]],
+    Dict[str, Dict[str, List[Dict[str, str]]]],
+    Dict[str, Dict[str, List[Dict[str, str]]]],
+    Dict[str, str],
+]:
+    warnings: List[str] = []
+    manifest_rows: List[Dict[str, str]] = []
+    pools: Dict[str, Dict[str, List[Dict[str, str]]]] = {label: {} for label in final_labels}
+    fallback_pools: Dict[str, Dict[str, List[Dict[str, str]]]] = {label: {} for label in final_labels}
+    assigned: Dict[str, str] = {}
+    return warnings, manifest_rows, pools, fallback_pools, assigned
+
+
+def resolve_all_class_roots(sources: dict) -> Dict[str, Dict[str, List[Path]]]:
+    class_roots: Dict[str, Dict[str, List[Path]]] = {}
+    for name, meta in sources.items():
+        primary_root, fallback_roots = resolve_class_roots(meta)
+        class_roots[name] = {
+            "primary": [primary_root],
+            "fallback": fallback_roots,
+        }
+    return class_roots
+
+
+def _resolve_relative_path(root: Path, img_path: Path) -> str:
+    try:
+        return img_path.resolve().relative_to(root).as_posix()
+    except ValueError:
+        return str(img_path.resolve())
+
+
+def _append_samples_from_class_dir(
+    class_dir: Path,
+    source_name: str,
+    orig: str,
+    label: str,
+    root: Path,
+    assigned: Dict[str, str],
+    warnings: List[str],
+    out_rows: List[Dict[str, str]],
+) -> List[Dict[str, str]]:
+    items: List[Dict[str, str]] = []
+    if not class_dir.exists():
+        warnings.append(f"Missing class dir: {class_dir}")
+        return items
+
+    for img_path in list_images(class_dir):
+        rel_path = _resolve_relative_path(root, img_path)
+        if rel_path in assigned and assigned[rel_path] != label:
+            warnings.append(f"File used in multiple labels: {rel_path}")
+            continue
+        assigned[rel_path] = label
+        sample = {
+            "filepath": rel_path,
+            "source": source_name,
+            "orig_class": orig,
+            "final_label": label,
+        }
+        items.append(sample)
+        out_rows.append(sample)
+    return items
+
+
+def _collect_mix_from_roots(
+    source_name: str,
+    orig_classes: List[str],
+    label: str,
+    root_paths: List[Path],
+    repo_root: Path,
+    assigned: Dict[str, str],
+    warnings: List[str],
+    manifest_rows: List[Dict[str, str]],
+) -> List[Dict[str, str]]:
+    collected: List[Dict[str, str]] = []
+    for root_path in root_paths:
+        for orig in orig_classes:
+            class_dir = root_path / orig
+            collected.extend(
+                _append_samples_from_class_dir(
+                    class_dir=class_dir,
+                    source_name=source_name,
+                    orig=orig,
+                    label=label,
+                    root=repo_root,
+                    assigned=assigned,
+                    warnings=warnings,
+                    out_rows=manifest_rows,
+                )
+            )
+    return collected
+
+
+def collect_samples_by_label(
+    final_labels: List[str],
+    sources: dict,
+    label_mix: dict,
+    class_roots: Dict[str, Dict[str, List[Path]]],
+    root: Path,
+    warnings: List[str],
+    manifest_rows: List[Dict[str, str]],
+    pools: Dict[str, Dict[str, List[Dict[str, str]]]],
+    fallback_pools: Dict[str, Dict[str, List[Dict[str, str]]]],
+    assigned: Dict[str, str],
+) -> None:
+    for label in final_labels:
+        mixes = label_mix.get(label, [])
+        if not mixes:
+            raise ValueError(f"Missing label_mix for label '{label}'.")
+        for mix in mixes:
+            source_name = mix.get("source")
+            orig_classes = mix.get("orig_classes", [])
+            if source_name not in sources:
+                raise ValueError(f"Unknown source '{source_name}' for label '{label}'.")
+            if not orig_classes:
+                raise ValueError(f"orig_classes is empty for label '{label}' and source '{source_name}'.")
+
+            source_root = class_roots[source_name]["primary"][0]
+            pools[label].setdefault(source_name, [])
+            pools[label][source_name].extend(
+                _collect_mix_from_roots(
+                    source_name=source_name,
+                    orig_classes=orig_classes,
+                    label=label,
+                    root_paths=[source_root],
+                    repo_root=root,
+                    assigned=assigned,
+                    warnings=warnings,
+                    manifest_rows=manifest_rows,
+                )
+            )
+
+            fallback_roots = class_roots[source_name]["fallback"]
+            if not fallback_roots:
+                continue
+            fallback_pools[label].setdefault(source_name, [])
+            fallback_pools[label][source_name].extend(
+                _collect_mix_from_roots(
+                    source_name=source_name,
+                    orig_classes=orig_classes,
+                    label=label,
+                    root_paths=fallback_roots,
+                    repo_root=root,
+                    assigned=assigned,
+                    warnings=warnings,
+                    manifest_rows=manifest_rows,
+                )
+            )
+
+
+def apply_caps_to_pools(
+    pools: Dict[str, Dict[str, List[Dict[str, str]]]],
+    caps: dict,
+    seed: int,
+    warnings: List[str],
+) -> None:
+    for label, sources_map in pools.items():
+        for source_name, items in sources_map.items():
+            cap = caps.get(source_name, {}).get(label)
+            if cap is None:
+                continue
+            rng = random.Random(seed + stable_int(f"{label}-{source_name}-cap"))
+            rng.shuffle(items)
+            if len(items) <= cap:
+                continue
+            warnings.append(f"Cap applied: {label}/{source_name} {len(items)} -> {cap}")
+            pools[label][source_name] = items[: int(cap)]
+
+
+def scale_target_counts_if_needed(target_counts: dict, max_total: int | None, warnings: List[str]) -> None:
+    if not max_total:
+        return
+    total_target = sum(
+        int(target_counts[split_name][label_name])
+        for split_name in target_counts
+        for label_name in target_counts[split_name]
+    )
+    if total_target <= max_total:
+        return
+    ratio = max_total / total_target
+    warnings.append(f"Scaling target counts by ratio {ratio:.4f} to respect max_total_images.")
+    for split in target_counts:
+        for label in target_counts[split]:
+            target_counts[split][label] = int(math.floor(target_counts[split][label] * ratio))
+
+
+def shuffle_all_pools(
+    pools: Dict[str, Dict[str, List[Dict[str, str]]]],
+    fallback_pools: Dict[str, Dict[str, List[Dict[str, str]]]],
+    seed: int,
+) -> None:
+    for label, sources_map in pools.items():
+        for source_name, items in sources_map.items():
+            rng = random.Random(seed + stable_int(f"{label}-{source_name}"))
+            rng.shuffle(items)
+        for source_name, items in fallback_pools.get(label, {}).items():
+            rng = random.Random(seed + stable_int(f"{label}-{source_name}-fallback"))
+            rng.shuffle(items)
+
+
+def init_pool_indices(
+    pools: Dict[str, Dict[str, List[Dict[str, str]]]],
+) -> Tuple[Dict[Tuple[str, str], int], Dict[Tuple[str, str], int]]:
+    indices: Dict[Tuple[str, str], int] = {}
+    fallback_indices: Dict[Tuple[str, str], int] = {}
+    for label, sources_map in pools.items():
+        for source_name in sources_map:
+            indices[(label, source_name)] = 0
+            fallback_indices[(label, source_name)] = 0
+    return indices, fallback_indices
+
+
+def take_from_pools(
+    label: str,
+    source_name: str,
+    n: int,
+    pools: Dict[str, Dict[str, List[Dict[str, str]]]],
+    fallback_pools: Dict[str, Dict[str, List[Dict[str, str]]]],
+    indices: Dict[Tuple[str, str], int],
+    fallback_indices: Dict[Tuple[str, str], int],
+) -> List[Dict[str, str]]:
+    pool = pools[label][source_name]
+    idx = indices[(label, source_name)]
+    picked = pool[idx : idx + n]
+    indices[(label, source_name)] = idx + len(picked)
+    remaining = n - len(picked)
+    if remaining <= 0:
+        return picked
+
+    fb_pool = fallback_pools.get(label, {}).get(source_name, [])
+    fb_idx = fallback_indices.get((label, source_name), 0)
+    fb_picked = fb_pool[fb_idx : fb_idx + remaining]
+    fallback_indices[(label, source_name)] = fb_idx + len(fb_picked)
+    picked.extend(fb_picked)
+    return picked
+
+
+def allocate_split_for_label(
+    split: str,
+    label: str,
+    target_counts: dict,
+    label_mix: dict,
+    pools: Dict[str, Dict[str, List[Dict[str, str]]]],
+    fallback_pools: Dict[str, Dict[str, List[Dict[str, str]]]],
+    indices: Dict[Tuple[str, str], int],
+    fallback_indices: Dict[Tuple[str, str], int],
+    warnings: List[str],
+) -> Tuple[List[Dict[str, str]], int]:
+    target = int(target_counts[split].get(label, 0))
+    mixes = label_mix[label]
+    weights = [float(m.get("weight", 0.0)) for m in mixes]
+    quotas = allocate_by_weights(target, weights)
+
+    selected: List[Dict[str, str]] = []
+    shortage = 0
+    for mix, quota in zip(mixes, quotas):
+        src = mix["source"]
+        got = take_from_pools(label, src, quota, pools, fallback_pools, indices, fallback_indices)
+        selected.extend(got)
+        shortage += max(0, quota - len(got))
+
+    if shortage > 0:
+        ordered_sources = [m["source"] for m in sorted(mixes, key=lambda m: m["weight"], reverse=True)]
+        for src in ordered_sources:
+            if shortage <= 0:
+                break
+            extra = take_from_pools(label, src, shortage, pools, fallback_pools, indices, fallback_indices)
+            selected.extend(extra)
+            shortage -= len(extra)
+
+    if shortage > 0:
+        warnings.append(f"Underfilled {split}/{label} by {shortage} samples.")
+    return selected, max(shortage, 0)
+
+
+def build_split_rows(
+    splits: List[str],
+    final_labels: List[str],
+    target_counts: dict,
+    label_mix: dict,
+    pools: Dict[str, Dict[str, List[Dict[str, str]]]],
+    fallback_pools: Dict[str, Dict[str, List[Dict[str, str]]]],
+    seed: int,
+    warnings: List[str],
+) -> Tuple[
+    Dict[str, List[Dict[str, str]]],
+    Dict[str, Dict[str, Dict[str, int]]],
+    Dict[str, Dict[str, int]],
+]:
+    split_rows: Dict[str, List[Dict[str, str]]] = {s: [] for s in splits}
+    split_stats = {s: {"labels": {}, "sources": {}} for s in splits}
+    shortages: Dict[str, Dict[str, int]] = {s: {} for s in splits}
+    indices, fallback_indices = init_pool_indices(pools)
+
+    for split in splits:
+        if split not in target_counts:
+            raise ValueError(f"target_counts missing split '{split}'.")
+        for label in final_labels:
+            selected, shortage = allocate_split_for_label(
+                split=split,
+                label=label,
+                target_counts=target_counts,
+                label_mix=label_mix,
+                pools=pools,
+                fallback_pools=fallback_pools,
+                indices=indices,
+                fallback_indices=fallback_indices,
+                warnings=warnings,
+            )
+            if shortage > 0:
+                shortages[split][label] = shortage
+            split_rows[split].extend(selected)
+            split_stats[split]["labels"][label] = len(selected)
+            for item in selected:
+                src = item["source"]
+                split_stats[split]["sources"][src] = split_stats[split]["sources"].get(src, 0) + 1
+
+        rng = random.Random(seed + stable_int(f"{split}-shuffle"))
+        rng.shuffle(split_rows[split])
+
+    return split_rows, split_stats, shortages
+
+
+def write_manifest_and_splits(
+    manifest_path: Path,
+    run_dir: Path,
+    splits: List[str],
+    manifest_rows: List[Dict[str, str]],
+    split_rows: Dict[str, List[Dict[str, str]]],
+) -> None:
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    with manifest_path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["filepath", "source", "orig_class", "final_label"])
+        writer.writeheader()
+        writer.writerows(manifest_rows)
+
+    for split in splits:
+        out_path = run_dir / f"{split}.csv"
+        with out_path.open("w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=["filepath", "source", "orig_class", "final_label"])
+            writer.writeheader()
+            writer.writerows(split_rows[split])
+
+
+def maybe_create_links(
+    cfg: dict,
+    splits: List[str],
+    split_rows: Dict[str, List[Dict[str, str]]],
+    root: Path,
+) -> None:
+    if not cfg.get("make_links", False):
+        return
+    links_cfg = cfg.get("links", {})
+    method = links_cfg.get("method", "auto")
+    out_dir = Path(links_cfg.get("out_dir", "CNN/data/merged_tier1"))
+    for split in splits:
+        for item in split_rows[split]:
+            label = item["final_label"]
+            src_path = root / item["filepath"]
+            dst_dir = out_dir / split / label
+            dst_dir.mkdir(parents=True, exist_ok=True)
+            dst_path = dst_dir / Path(item["filepath"]).name
+            if dst_path.exists():
+                continue
+            created = False
+            if method in ("auto", "symlink"):
+                try:
+                    os.symlink(src_path, dst_path)
+                    created = True
+                except OSError:
+                    created = False
+            if not created and method in ("auto", "hardlink"):
+                try:
+                    os.link(src_path, dst_path)
+                    created = True
+                except OSError:
+                    created = False
+            if not created and method in ("auto", "copy"):
+                shutil.copy2(src_path, dst_path)
+
+
+def build_stats_payload(
+    final_labels: List[str],
+    target_counts: dict,
+    split_stats: dict,
+    shortages: dict,
+    warnings: List[str],
+    class_roots: Dict[str, Dict[str, List[Path]]],
+) -> dict:
+    return {
+        "final_labels": final_labels,
+        "target_counts": target_counts,
+        "actual_counts": split_stats,
+        "shortages": shortages,
+        "warnings": warnings,
+        "class_roots": {
+            k: {"primary": [str(p) for p in v["primary"]], "fallback": [str(p) for p in v["fallback"]]}
+            for k, v in class_roots.items()
+        },
+    }
+
+
+def write_stats(stats_path: Path, stats: dict) -> None:
+    stats_path.parent.mkdir(parents=True, exist_ok=True)
+    with stats_path.open("w", encoding="utf-8") as f:
+        json.dump(stats, f, indent=2, ensure_ascii=False)
+
+
+def copy_latest_files(args: argparse.Namespace, manifest_path: Path, stats_path: Path, run_dir: Path, splits: List[str]) -> Path:
+    latest_dir = args.splits_dir / "latest"
+    latest_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(manifest_path, latest_dir / "manifest.csv")
+    shutil.copy2(stats_path, latest_dir / "stats.json")
+    for split in splits:
+        shutil.copy2(run_dir / f"{split}.csv", latest_dir / f"{split}.csv")
+    return latest_dir
+
+
 def main() -> None:
     args = parse_args()
     cfg = load_yaml(args.config)
@@ -131,193 +552,40 @@ def main() -> None:
     label_mix = cfg.get("label_mix", {})
     caps = cfg.get("caps", {})
     seed = int(cfg.get("seed", 42))
-
-    warnings: List[str] = []
-    manifest_rows: List[Dict[str, str]] = []
-    pools: Dict[str, Dict[str, List[Dict[str, str]]]] = {label: {} for label in final_labels}
-    fallback_pools: Dict[str, Dict[str, List[Dict[str, str]]]] = {
-        label: {} for label in final_labels
-    }
-    assigned: Dict[str, str] = {}
-
-    class_roots: Dict[str, Dict[str, List[Path]]] = {}
-    for name, meta in sources.items():
-        primary_root, fallback_roots = resolve_class_roots(meta)
-        class_roots[name] = {
-            "primary": [primary_root],
-            "fallback": fallback_roots,
-        }
-
-    for label in final_labels:
-        mixes = label_mix.get(label, [])
-        if not mixes:
-            raise ValueError(f"Missing label_mix for label '{label}'.")
-        for mix in mixes:
-            source_name = mix.get("source")
-            orig_classes = mix.get("orig_classes", [])
-            if source_name not in sources:
-                raise ValueError(f"Unknown source '{source_name}' for label '{label}'.")
-            if not orig_classes:
-                raise ValueError(f"orig_classes is empty for label '{label}' and source '{source_name}'.")
-
-            source_root = class_roots[source_name]["primary"][0]
-            pools[label].setdefault(source_name, [])
-            for orig in orig_classes:
-                class_dir = source_root / orig
-                if not class_dir.exists():
-                    warnings.append(f"Missing class dir: {class_dir}")
-                    continue
-                for img_path in list_images(class_dir):
-                    rel_path = None
-                    try:
-                        rel_path = img_path.resolve().relative_to(root).as_posix()
-                    except ValueError:
-                        rel_path = str(img_path.resolve())
-                    if rel_path in assigned and assigned[rel_path] != label:
-                        warnings.append(f"File used in multiple labels: {rel_path}")
-                        continue
-                    assigned[rel_path] = label
-                    sample = {
-                        "filepath": rel_path,
-                        "source": source_name,
-                        "orig_class": orig,
-                        "final_label": label,
-                    }
-                    pools[label][source_name].append(sample)
-                    manifest_rows.append(sample)
-
-            fallback_roots = class_roots[source_name]["fallback"]
-            if fallback_roots:
-                fallback_pools[label].setdefault(source_name, [])
-                for fallback_root in fallback_roots:
-                    for orig in orig_classes:
-                        class_dir = fallback_root / orig
-                        if not class_dir.exists():
-                            warnings.append(f"Missing class dir: {class_dir}")
-                            continue
-                        for img_path in list_images(class_dir):
-                            rel_path = None
-                            try:
-                                rel_path = img_path.resolve().relative_to(root).as_posix()
-                            except ValueError:
-                                rel_path = str(img_path.resolve())
-                            if rel_path in assigned and assigned[rel_path] != label:
-                                warnings.append(f"File used in multiple labels: {rel_path}")
-                                continue
-                            assigned[rel_path] = label
-                            sample = {
-                                "filepath": rel_path,
-                                "source": source_name,
-                                "orig_class": orig,
-                                "final_label": label,
-                            }
-                            fallback_pools[label][source_name].append(sample)
-                            manifest_rows.append(sample)
-
-    # Apply optional caps per source per label (deterministic).
-    for label, sources_map in pools.items():
-        for source_name, items in sources_map.items():
-            cap = caps.get(source_name, {}).get(label)
-            if cap is None:
-                continue
-            rng = random.Random(seed + stable_int(f"{label}-{source_name}-cap"))
-            rng.shuffle(items)
-            if len(items) > cap:
-                warnings.append(f"Cap applied: {label}/{source_name} {len(items)} -> {cap}")
-                pools[label][source_name] = items[: int(cap)]
-
-    # Scale target counts if max_total_images is set.
     target_counts = cfg.get("target_counts", {})
-    max_total = cfg.get("max_total_images")
-    if max_total:
-        max_total = int(max_total)
-        total_target = sum(
-            int(target_counts[split_name][label_name])
-            for split_name in target_counts
-            for label_name in target_counts[split_name]
-        )
-        if total_target > max_total:
-            ratio = max_total / total_target
-            warnings.append(f"Scaling target counts by ratio {ratio:.4f} to respect max_total_images.")
-            for split in target_counts:
-                for label in target_counts[split]:
-                    target_counts[split][label] = int(math.floor(target_counts[split][label] * ratio))
+    max_total_raw = cfg.get("max_total_images")
+    max_total = int(max_total_raw) if max_total_raw else None
 
-    # Shuffle pools deterministically.
-    for label, sources_map in pools.items():
-        for source_name, items in sources_map.items():
-            rng = random.Random(seed + stable_int(f"{label}-{source_name}"))
-            rng.shuffle(items)
-        for source_name, items in fallback_pools.get(label, {}).items():
-            rng = random.Random(seed + stable_int(f"{label}-{source_name}-fallback"))
-            rng.shuffle(items)
+    warnings, manifest_rows, pools, fallback_pools, assigned = init_collection_state(final_labels)
+    class_roots = resolve_all_class_roots(sources)
 
-    # Prepare index pointers for each pool.
-    indices: Dict[Tuple[str, str], int] = {}
-    fallback_indices: Dict[Tuple[str, str], int] = {}
-    for label, sources_map in pools.items():
-        for source_name in sources_map:
-            indices[(label, source_name)] = 0
-            fallback_indices[(label, source_name)] = 0
-
-    def take(label: str, source_name: str, n: int) -> List[Dict[str, str]]:
-        pool = pools[label][source_name]
-        idx = indices[(label, source_name)]
-        picked = pool[idx : idx + n]
-        indices[(label, source_name)] = idx + len(picked)
-        remaining = n - len(picked)
-        if remaining > 0:
-            fb_pool = fallback_pools.get(label, {}).get(source_name, [])
-            fb_idx = fallback_indices.get((label, source_name), 0)
-            fb_picked = fb_pool[fb_idx : fb_idx + remaining]
-            fallback_indices[(label, source_name)] = fb_idx + len(fb_picked)
-            picked.extend(fb_picked)
-        return picked
+    collect_samples_by_label(
+        final_labels=final_labels,
+        sources=sources,
+        label_mix=label_mix,
+        class_roots=class_roots,
+        root=root,
+        warnings=warnings,
+        manifest_rows=manifest_rows,
+        pools=pools,
+        fallback_pools=fallback_pools,
+        assigned=assigned,
+    )
+    apply_caps_to_pools(pools, caps, seed, warnings)
+    scale_target_counts_if_needed(target_counts, max_total, warnings)
+    shuffle_all_pools(pools, fallback_pools, seed)
 
     splits = ["train", "val", "test"]
-    split_rows: Dict[str, List[Dict[str, str]]] = {s: [] for s in splits}
-    split_stats = {s: {"labels": {}, "sources": {}} for s in splits}
-    shortages: Dict[str, Dict[str, int]] = {s: {} for s in splits}
-
-    for split in splits:
-        if split not in target_counts:
-            raise ValueError(f"target_counts missing split '{split}'.")
-        for label in final_labels:
-            target = int(target_counts[split].get(label, 0))
-            mixes = label_mix[label]
-            weights = [float(m.get("weight", 0.0)) for m in mixes]
-            quotas = allocate_by_weights(target, weights)
-
-            selected: List[Dict[str, str]] = []
-            shortage = 0
-            for mix, quota in zip(mixes, quotas):
-                src = mix["source"]
-                got = take(label, src, quota)
-                selected.extend(got)
-                if len(got) < quota:
-                    shortage += quota - len(got)
-
-            if shortage > 0:
-                ordered_sources = [m["source"] for m in sorted(mixes, key=lambda m: m["weight"], reverse=True)]
-                for src in ordered_sources:
-                    if shortage <= 0:
-                        break
-                    extra = take(label, src, shortage)
-                    selected.extend(extra)
-                    shortage -= len(extra)
-
-            if shortage > 0:
-                warnings.append(f"Underfilled {split}/{label} by {shortage} samples.")
-                shortages[split][label] = shortage
-
-            split_rows[split].extend(selected)
-            split_stats[split]["labels"][label] = len(selected)
-            for item in selected:
-                src = item["source"]
-                split_stats[split]["sources"][src] = split_stats[split]["sources"].get(src, 0) + 1
-
-        rng = random.Random(seed + stable_int(f"{split}-shuffle"))
-        rng.shuffle(split_rows[split])
+    split_rows, split_stats, shortages = build_split_rows(
+        splits=splits,
+        final_labels=final_labels,
+        target_counts=target_counts,
+        label_mix=label_mix,
+        pools=pools,
+        fallback_pools=fallback_pools,
+        seed=seed,
+        warnings=warnings,
+    )
 
     # Write manifest.
     run_name = args.run_name or datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -326,72 +594,26 @@ def main() -> None:
     manifest_path = args.manifest or (run_dir / "manifest.csv")
     stats_path = args.stats or (run_dir / "stats.json")
 
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    with manifest_path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["filepath", "source", "orig_class", "final_label"])
-        writer.writeheader()
-        writer.writerows(manifest_rows)
+    write_manifest_and_splits(
+        manifest_path=manifest_path,
+        run_dir=run_dir,
+        splits=splits,
+        manifest_rows=manifest_rows,
+        split_rows=split_rows,
+    )
+    maybe_create_links(cfg=cfg, splits=splits, split_rows=split_rows, root=root)
 
-    # Write splits.
-    for split in splits:
-        out_path = run_dir / f"{split}.csv"
-        with out_path.open("w", encoding="utf-8", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=["filepath", "source", "orig_class", "final_label"])
-            writer.writeheader()
-            writer.writerows(split_rows[split])
+    stats = build_stats_payload(
+        final_labels=final_labels,
+        target_counts=target_counts,
+        split_stats=split_stats,
+        shortages=shortages,
+        warnings=warnings,
+        class_roots=class_roots,
+    )
+    write_stats(stats_path, stats)
 
-    # Optional merged folder with links.
-    if cfg.get("make_links", False):
-        links_cfg = cfg.get("links", {})
-        method = links_cfg.get("method", "auto")
-        out_dir = Path(links_cfg.get("out_dir", "CNN/data/merged_tier1"))
-        for split in splits:
-            for item in split_rows[split]:
-                label = item["final_label"]
-                src_path = root / item["filepath"]
-                dst_dir = out_dir / split / label
-                dst_dir.mkdir(parents=True, exist_ok=True)
-                dst_path = dst_dir / Path(item["filepath"]).name
-                if dst_path.exists():
-                    continue
-                created = False
-                if method in ("auto", "symlink"):
-                    try:
-                        os.symlink(src_path, dst_path)
-                        created = True
-                    except OSError:
-                        created = False
-                if not created and method in ("auto", "hardlink"):
-                    try:
-                        os.link(src_path, dst_path)
-                        created = True
-                    except OSError:
-                        created = False
-                if not created and method in ("auto", "copy"):
-                    shutil.copy2(src_path, dst_path)
-
-    stats = {
-        "final_labels": final_labels,
-        "target_counts": target_counts,
-        "actual_counts": split_stats,
-        "shortages": shortages,
-        "warnings": warnings,
-        "class_roots": {
-            k: {"primary": [str(p) for p in v["primary"]], "fallback": [str(p) for p in v["fallback"]]}
-            for k, v in class_roots.items()
-        },
-    }
-
-    stats_path.parent.mkdir(parents=True, exist_ok=True)
-    with stats_path.open("w", encoding="utf-8") as f:
-        json.dump(stats, f, indent=2, ensure_ascii=False)
-
-    latest_dir = args.splits_dir / "latest"
-    latest_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(manifest_path, latest_dir / "manifest.csv")
-    shutil.copy2(stats_path, latest_dir / "stats.json")
-    for split in splits:
-        shutil.copy2(run_dir / f"{split}.csv", latest_dir / f"{split}.csv")
+    latest_dir = copy_latest_files(args, manifest_path, stats_path, run_dir, splits)
 
     print(f"Run: {run_dir}")
     print(f"Latest: {latest_dir}")

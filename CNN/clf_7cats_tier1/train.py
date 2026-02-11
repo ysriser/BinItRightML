@@ -271,6 +271,289 @@ def save_history(history: List[Dict[str, float]], run_dir: Path) -> None:
         )
 
 
+def load_train_config(config_path: Path) -> dict:
+    with config_path.open("r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f) or {}
+    if not isinstance(cfg, dict):
+        raise ValueError("train.yaml must be a YAML mapping.")
+    return cfg
+
+
+def resolve_device(cfg: dict) -> torch.device:
+    device_str = cfg.get("device", "cuda")
+    require_cuda = bool(cfg.get("require_cuda", False))
+    if device_str == "cuda" and not torch.cuda.is_available():
+        if require_cuda:
+            raise RuntimeError("require_cuda=true but CUDA is not available.")
+        return torch.device("cpu")
+    return torch.device(device_str)
+
+
+def resolve_paths(cfg: dict) -> Tuple[Path, Path, Path, Path, Path]:
+    paths = cfg.get("paths", {})
+    train_csv = Path(paths.get("train_csv", "CNN/data/tier1_splits/train.csv"))
+    val_csv = Path(paths.get("val_csv", "CNN/data/tier1_splits/val.csv"))
+    test_csv = Path(paths.get("test_csv", "CNN/data/tier1_splits/test.csv"))
+    output_dir = Path(paths.get("output_dir", "CNN/outputs/clf_7cats_tier1"))
+    model_dir = Path(paths.get("model_dir", "CNN/models"))
+    return train_csv, val_csv, test_csv, output_dir, model_dir
+
+
+def build_datasets(
+    train_csv: Path,
+    val_csv: Path,
+    test_csv: Path,
+    label_to_idx: Dict[str, int],
+    train_tfm,
+    eval_tfm,
+    verify_images: bool,
+    skip_bad_images: bool,
+    max_retry: int,
+    bad_list_path: Path,
+) -> Tuple[CsvDataset, CsvDataset, CsvDataset]:
+    train_ds = CsvDataset(
+        train_csv,
+        label_to_idx,
+        transform=train_tfm,
+        verify_images=verify_images,
+        skip_bad_images=skip_bad_images,
+        max_retry=max_retry,
+        bad_list_path=bad_list_path,
+    )
+    val_ds = CsvDataset(
+        val_csv,
+        label_to_idx,
+        transform=eval_tfm,
+        verify_images=verify_images,
+        skip_bad_images=skip_bad_images,
+        max_retry=max_retry,
+        bad_list_path=bad_list_path,
+    )
+    test_ds = CsvDataset(
+        test_csv,
+        label_to_idx,
+        transform=eval_tfm,
+        verify_images=verify_images,
+        skip_bad_images=skip_bad_images,
+        max_retry=max_retry,
+        bad_list_path=bad_list_path,
+    )
+    return train_ds, val_ds, test_ds
+
+
+def build_loaders(
+    train_ds: CsvDataset,
+    val_ds: CsvDataset,
+    test_ds: CsvDataset,
+    labels: List[str],
+    batch_size: int,
+    num_workers: int,
+    pin_memory: bool,
+    persistent_workers: bool,
+    prefetch_factor: int,
+) -> Tuple[DataLoader, DataLoader, DataLoader]:
+    class_counts = [0] * len(labels)
+    for _, label in train_ds.items:
+        class_counts[label] += 1
+    class_weights = [1.0 / max(1, count) for count in class_counts]
+    sample_weights = [class_weights[label] for _, label in train_ds.items]
+    sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
+
+    loader_kwargs = {
+        "batch_size": batch_size,
+        "num_workers": num_workers,
+        "pin_memory": pin_memory,
+        "persistent_workers": persistent_workers and num_workers > 0,
+    }
+    if num_workers > 0:
+        loader_kwargs["prefetch_factor"] = prefetch_factor
+
+    train_loader = DataLoader(train_ds, sampler=sampler, **loader_kwargs)
+    val_loader = DataLoader(val_ds, shuffle=False, **loader_kwargs)
+    test_loader = DataLoader(test_ds, shuffle=False, **loader_kwargs)
+    return train_loader, val_loader, test_loader
+
+
+def make_scheduler(
+    scheduler_enabled: bool,
+    scheduler_name: str,
+    min_lr: float,
+    optimizer: torch.optim.Optimizer,
+    epochs: int,
+):
+    if not scheduler_enabled:
+        return None
+    if scheduler_name == "cosine":
+        return torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=max(1, epochs),
+            eta_min=min_lr,
+        )
+    return None
+
+
+def set_classifier_trainable_only(model: nn.Module) -> None:
+    for param in model.parameters():
+        param.requires_grad = False
+    for param in model.get_classifier().parameters():
+        param.requires_grad = True
+
+
+def set_all_trainable(model: nn.Module) -> None:
+    for param in model.parameters():
+        param.requires_grad = True
+
+
+def run_train_epoch(
+    model: nn.Module,
+    train_loader: DataLoader,
+    optimizer: torch.optim.Optimizer,
+    criterion: nn.Module,
+    device: torch.device,
+    scaler: torch.amp.GradScaler,
+    use_amp: bool,
+    grad_clip: float,
+    show_progress: bool,
+    epoch_idx: int,
+    total_epochs: int,
+) -> Tuple[float, float]:
+    model.train()
+    total_loss = 0.0
+    total_samples = 0
+    total_correct = 0
+    train_iter = train_loader
+    if show_progress:
+        train_iter = tqdm(
+            train_loader,
+            desc=f"Train {epoch_idx}/{total_epochs}",
+            leave=False,
+            ncols=100,
+        )
+
+    for images, labels_batch in train_iter:
+        images = images.to(device)
+        labels_batch = labels_batch.to(device)
+        optimizer.zero_grad(set_to_none=True)
+        with torch.amp.autocast(device_type="cuda", enabled=use_amp):
+            logits = model(images)
+            loss = criterion(logits, labels_batch)
+        scaler.scale(loss).backward()
+        if grad_clip and grad_clip > 0:
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+        scaler.step(optimizer)
+        scaler.update()
+
+        total_loss += loss.item() * labels_batch.size(0)
+        total_samples += labels_batch.size(0)
+        total_correct += (logits.argmax(dim=1) == labels_batch).sum().item()
+
+    avg_loss = total_loss / max(1, total_samples)
+    acc = total_correct / max(1, total_samples)
+    print(f"Epoch {epoch_idx}/{total_epochs} | train_loss={avg_loss:.4f} train_acc={acc:.4f}")
+    return avg_loss, acc
+
+
+def maybe_save_best_checkpoint(
+    model: nn.Module,
+    best_path: Path,
+    run_dir: Path,
+    labels: List[str],
+    val_labels: List[int],
+    val_preds: List[int],
+    val_f1: float,
+    best_f1: float,
+) -> Tuple[float, bool]:
+    if val_f1 <= best_f1:
+        return best_f1, False
+    torch.save(model.state_dict(), best_path)
+    save_confusion_from_preds(val_labels, val_preds, labels, run_dir / "val_confusion.png")
+    print(f"Saved best checkpoint to {best_path}")
+    return val_f1, True
+
+
+def run_training_stage(
+    model: nn.Module,
+    stage: int,
+    epoch_start: int,
+    epoch_end: int,
+    total_epochs: int,
+    train_loader: DataLoader,
+    val_loader: DataLoader,
+    optimizer: torch.optim.Optimizer,
+    scheduler,
+    criterion: nn.Module,
+    device: torch.device,
+    scaler: torch.amp.GradScaler,
+    use_amp: bool,
+    grad_clip: float,
+    show_progress: bool,
+    labels: List[str],
+    infer_topk: int,
+    run_dir: Path,
+    best_path: Path,
+    best_f1: float,
+    no_improve: int,
+    early_stop_patience: int,
+    history: List[Dict[str, float]],
+) -> Tuple[float, int, bool]:
+    for epoch in range(epoch_start, epoch_end + 1):
+        train_loss, train_acc = run_train_epoch(
+            model=model,
+            train_loader=train_loader,
+            optimizer=optimizer,
+            criterion=criterion,
+            device=device,
+            scaler=scaler,
+            use_amp=use_amp,
+            grad_clip=grad_clip,
+            show_progress=show_progress,
+            epoch_idx=epoch,
+            total_epochs=total_epochs,
+        )
+        if scheduler:
+            scheduler.step()
+        val_metrics, val_labels, val_preds = collect_predictions(
+            model,
+            val_loader,
+            device,
+            len(labels),
+            topk=infer_topk,
+        )
+        print(
+            f"val_top1={val_metrics['top1']:.4f} val_top3={val_metrics['top3']:.4f} val_f1={val_metrics['macro_f1']:.4f}"
+        )
+        history.append(
+            {
+                "epoch": epoch,
+                "stage": stage,
+                "lr": optimizer.param_groups[0]["lr"],
+                "train_loss": train_loss,
+                "train_acc": train_acc,
+                "val_top1": val_metrics["top1"],
+                "val_top3": val_metrics["top3"],
+                "val_f1": val_metrics["macro_f1"],
+            }
+        )
+        best_f1, improved = maybe_save_best_checkpoint(
+            model=model,
+            best_path=best_path,
+            run_dir=run_dir,
+            labels=labels,
+            val_labels=val_labels,
+            val_preds=val_preds,
+            val_f1=val_metrics["macro_f1"],
+            best_f1=best_f1,
+        )
+        if improved:
+            no_improve = 0
+            continue
+        no_improve += 1
+        if early_stop_patience > 0 and no_improve >= early_stop_patience:
+            return best_f1, no_improve, True
+    return best_f1, no_improve, False
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Train Tier-1 classifier.")
     p.add_argument(
@@ -283,10 +566,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    with args.config.open("r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f) or {}
-    if not isinstance(cfg, dict):
-        raise ValueError("train.yaml must be a YAML mapping.")
+    cfg = load_train_config(args.config)
 
     seed = int(cfg.get("seed", 42))
     set_seed(seed)
@@ -295,21 +575,8 @@ def main() -> None:
     if not labels:
         raise ValueError("labels is empty in train.yaml.")
 
-    device_str = cfg.get("device", "cuda")
-    require_cuda = bool(cfg.get("require_cuda", False))
-    if device_str == "cuda" and not torch.cuda.is_available():
-        if require_cuda:
-            raise RuntimeError("require_cuda=true but CUDA is not available.")
-        device = torch.device("cpu")
-    else:
-        device = torch.device(device_str)
-
-    paths = cfg.get("paths", {})
-    train_csv = Path(paths.get("train_csv", "CNN/data/tier1_splits/train.csv"))
-    val_csv = Path(paths.get("val_csv", "CNN/data/tier1_splits/val.csv"))
-    test_csv = Path(paths.get("test_csv", "CNN/data/tier1_splits/test.csv"))
-    output_dir = Path(paths.get("output_dir", "CNN/outputs/clf_7cats_tier1"))
-    model_dir = Path(paths.get("model_dir", "CNN/models"))
+    device = resolve_device(cfg)
+    train_csv, val_csv, test_csv, output_dir, model_dir = resolve_paths(cfg)
 
     model_cfg = cfg.get("model", {})
     backbone = model_cfg.get("backbone", "efficientnet_b0")
@@ -375,28 +642,13 @@ def main() -> None:
 
     bad_list_path = run_dir / "bad_images.txt"
 
-    train_ds = CsvDataset(
+    train_ds, val_ds, test_ds = build_datasets(
         train_csv,
-        label_to_idx,
-        transform=train_tfm,
-        verify_images=verify_images,
-        skip_bad_images=skip_bad_images,
-        max_retry=max_retry,
-        bad_list_path=bad_list_path,
-    )
-    val_ds = CsvDataset(
         val_csv,
-        label_to_idx,
-        transform=eval_tfm,
-        verify_images=verify_images,
-        skip_bad_images=skip_bad_images,
-        max_retry=max_retry,
-        bad_list_path=bad_list_path,
-    )
-    test_ds = CsvDataset(
         test_csv,
         label_to_idx,
-        transform=eval_tfm,
+        train_tfm,
+        eval_tfm,
         verify_images=verify_images,
         skip_bad_images=skip_bad_images,
         max_retry=max_retry,
@@ -406,45 +658,26 @@ def main() -> None:
     if len(train_ds) == 0:
         raise ValueError("Empty train dataset. Check split CSVs.")
 
-    class_counts = [0] * len(labels)
-    for _, label in train_ds.items:
-        class_counts[label] += 1
-    class_weights = [1.0 / max(1, c) for c in class_counts]
-    sample_weights = [class_weights[label] for _, label in train_ds.items]
-    sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
-
-    loader_kwargs = {
-        "batch_size": batch_size,
-        "num_workers": num_workers,
-        "pin_memory": pin_memory,
-        "persistent_workers": persistent_workers and num_workers > 0,
-    }
-    if num_workers > 0:
-        loader_kwargs["prefetch_factor"] = prefetch_factor
-
-    train_loader = DataLoader(train_ds, sampler=sampler, **loader_kwargs)
-    val_loader = DataLoader(val_ds, shuffle=False, **loader_kwargs)
-    test_loader = DataLoader(test_ds, shuffle=False, **loader_kwargs)
+    train_loader, val_loader, test_loader = build_loaders(
+        train_ds=train_ds,
+        val_ds=val_ds,
+        test_ds=test_ds,
+        labels=labels,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=persistent_workers,
+        prefetch_factor=prefetch_factor,
+    )
 
     criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
     best_f1 = -1.0
     best_path = run_dir / "best.pt"
     scaler = torch.amp.GradScaler(device="cuda", enabled=use_amp)
     history: List[Dict[str, float]] = []
+    infer_topk = int(infer_cfg.get("topk", 3))
 
-    def make_scheduler(optimizer: torch.optim.Optimizer, epochs: int):
-        if not scheduler_enabled:
-            return None
-        if scheduler_name == "cosine":
-            return torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, T_max=max(1, epochs), eta_min=min_lr
-            )
-        return None
-
-    for param in model.parameters():
-        param.requires_grad = False
-    for param in model.get_classifier().parameters():
-        param.requires_grad = True
+    set_classifier_trainable_only(model)
 
     optimizer = torch.optim.AdamW(
         filter(lambda p: p.requires_grad, model.parameters()),
@@ -452,122 +685,70 @@ def main() -> None:
         weight_decay=weight_decay,
         betas=betas,
     )
-    scheduler = make_scheduler(optimizer, freeze_epochs)
+    scheduler = make_scheduler(scheduler_enabled, scheduler_name, min_lr, optimizer, freeze_epochs)
 
-    def run_epoch(epoch_idx: int, total_epochs: int) -> Tuple[float, float]:
-        model.train()
-        total_loss = 0.0
-        total = 0
-        correct = 0
-        train_iter = train_loader
-        if show_progress:
-            train_iter = tqdm(
-                train_loader,
-                desc=f"Train {epoch_idx}/{total_epochs}",
-                leave=False,
-                ncols=100,
-            )
-        for images, labels_batch in train_iter:
-            images = images.to(device)
-            labels_batch = labels_batch.to(device)
-            optimizer.zero_grad(set_to_none=True)
-            with torch.amp.autocast(device_type="cuda", enabled=use_amp):
-                logits = model(images)
-                loss = criterion(logits, labels_batch)
-            scaler.scale(loss).backward()
-            if grad_clip and grad_clip > 0:
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-            scaler.step(optimizer)
-            scaler.update()
-            total_loss += loss.item() * labels_batch.size(0)
-            total += labels_batch.size(0)
-            correct += (logits.argmax(dim=1) == labels_batch).sum().item()
-        avg_loss = total_loss / max(1, total)
-        acc = correct / max(1, total)
-        print(f"Epoch {epoch_idx}/{total_epochs} | train_loss={avg_loss:.4f} train_acc={acc:.4f}")
-        return avg_loss, acc
-
-    stop_early = False
     no_improve = 0
+    total_epochs = freeze_epochs + finetune_epochs
+    best_f1, no_improve, stop_early = run_training_stage(
+        model=model,
+        stage=1,
+        epoch_start=1,
+        epoch_end=freeze_epochs,
+        total_epochs=total_epochs,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        criterion=criterion,
+        device=device,
+        scaler=scaler,
+        use_amp=use_amp,
+        grad_clip=grad_clip,
+        show_progress=show_progress,
+        labels=labels,
+        infer_topk=infer_topk,
+        run_dir=run_dir,
+        best_path=best_path,
+        best_f1=best_f1,
+        no_improve=no_improve,
+        early_stop_patience=early_stop_patience,
+        history=history,
+    )
 
-    for epoch in range(1, freeze_epochs + 1):
-        train_loss, train_acc = run_epoch(epoch, freeze_epochs + finetune_epochs)
-        if scheduler:
-            scheduler.step()
-        val_metrics, val_labels, val_preds = collect_predictions(
-            model, val_loader, device, len(labels), topk=int(infer_cfg.get("topk", 3))
-        )
-        print(
-            f"val_top1={val_metrics['top1']:.4f} val_top3={val_metrics['top3']:.4f} val_f1={val_metrics['macro_f1']:.4f}"
-        )
-        history.append(
-            {
-                "epoch": epoch,
-                "stage": 1,
-                "lr": optimizer.param_groups[0]["lr"],
-                "train_loss": train_loss,
-                "train_acc": train_acc,
-                "val_top1": val_metrics["top1"],
-                "val_top3": val_metrics["top3"],
-                "val_f1": val_metrics["macro_f1"],
-            }
-        )
-        if val_metrics["macro_f1"] > best_f1:
-            best_f1 = val_metrics["macro_f1"]
-            torch.save(model.state_dict(), best_path)
-            save_confusion_from_preds(val_labels, val_preds, labels, run_dir / "val_confusion.png")
-            print(f"Saved best checkpoint to {best_path}")
-            no_improve = 0
-        else:
-            no_improve += 1
-            if early_stop_patience > 0 and no_improve >= early_stop_patience:
-                stop_early = True
-                break
-
-    if not stop_early:
-        for param in model.parameters():
-            param.requires_grad = True
+    if not stop_early and finetune_epochs > 0:
+        set_all_trainable(model)
         optimizer = torch.optim.AdamW(
             model.parameters(),
             lr=lr_finetune,
             weight_decay=weight_decay,
             betas=betas,
         )
-        scheduler = make_scheduler(optimizer, finetune_epochs)
-
-        for epoch in range(freeze_epochs + 1, freeze_epochs + finetune_epochs + 1):
-            train_loss, train_acc = run_epoch(epoch, freeze_epochs + finetune_epochs)
-            if scheduler:
-                scheduler.step()
-            val_metrics, val_labels, val_preds = collect_predictions(
-                model, val_loader, device, len(labels), topk=int(infer_cfg.get("topk", 3))
-            )
-            print(
-                f"val_top1={val_metrics['top1']:.4f} val_top3={val_metrics['top3']:.4f} val_f1={val_metrics['macro_f1']:.4f}"
-            )
-            history.append(
-                {
-                    "epoch": epoch,
-                    "stage": 2,
-                    "lr": optimizer.param_groups[0]["lr"],
-                    "train_loss": train_loss,
-                    "train_acc": train_acc,
-                    "val_top1": val_metrics["top1"],
-                    "val_top3": val_metrics["top3"],
-                    "val_f1": val_metrics["macro_f1"],
-                }
-            )
-            if val_metrics["macro_f1"] > best_f1:
-                best_f1 = val_metrics["macro_f1"]
-                torch.save(model.state_dict(), best_path)
-                save_confusion_from_preds(val_labels, val_preds, labels, run_dir / "val_confusion.png")
-                print(f"Saved best checkpoint to {best_path}")
-                no_improve = 0
-            else:
-                no_improve += 1
-                if early_stop_patience > 0 and no_improve >= early_stop_patience:
-                    break
+        scheduler = make_scheduler(scheduler_enabled, scheduler_name, min_lr, optimizer, finetune_epochs)
+        _, _, _ = run_training_stage(
+            model=model,
+            stage=2,
+            epoch_start=freeze_epochs + 1,
+            epoch_end=freeze_epochs + finetune_epochs,
+            total_epochs=total_epochs,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            criterion=criterion,
+            device=device,
+            scaler=scaler,
+            use_amp=use_amp,
+            grad_clip=grad_clip,
+            show_progress=show_progress,
+            labels=labels,
+            infer_topk=infer_topk,
+            run_dir=run_dir,
+            best_path=best_path,
+            best_f1=best_f1,
+            no_improve=no_improve,
+            early_stop_patience=early_stop_patience,
+            history=history,
+        )
 
     save_history(history, run_dir)
 

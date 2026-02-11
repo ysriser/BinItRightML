@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import logging
 
 import random
 from collections import defaultdict
@@ -39,6 +40,7 @@ IMAGE_EXTS = {
     ".heic",
     ".heif",
 }
+LOGGER = logging.getLogger(__name__)
 
 
 def load_yaml(path: Path) -> dict:
@@ -350,8 +352,12 @@ def save_confusion_image(
         out_path.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(out_path, dpi=140)
         plt.close(fig)
-    except Exception:
-        pass
+    except Exception as exc:
+        LOGGER.warning(
+            "Failed to render confusion matrix at %s: %s",
+            out_path,
+            exc,
+        )
 
 
 def save_reliability_plot(
@@ -396,8 +402,12 @@ def save_reliability_plot(
         out_path.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(out_path, dpi=140)
         plt.close(fig)
-    except Exception:
-        pass
+    except Exception as exc:
+        LOGGER.warning(
+            "Failed to render reliability plot at %s: %s",
+            out_path,
+            exc,
+        )
 
 
 def parse_args() -> argparse.Namespace:

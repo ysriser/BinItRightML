@@ -5,7 +5,9 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import logging
 import random
+import shutil
 import subprocess
 import warnings
 from dataclasses import dataclass
@@ -54,6 +56,7 @@ IMAGE_EXTS = {
     ".heic",
     ".heif",
 }
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -633,8 +636,12 @@ def save_confusion(
         fig.tight_layout()
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
-    except Exception:
-        pass
+    except Exception as exc:
+        LOGGER.warning(
+            "Failed to render confusion matrix at %s: %s",
+            out_path,
+            exc,
+        )
 
 
 def save_history(
@@ -677,8 +684,12 @@ def save_history(
         fig.tight_layout()
         fig.savefig(out_dir / "curves.png", dpi=150)
         plt.close(fig)
-    except Exception:
-        pass
+    except Exception as exc:
+        LOGGER.warning(
+            "Failed to render training curves at %s: %s",
+            out_dir / "curves.png",
+            exc,
+        )
 
 
 def summarize_phases(history: List[Dict[str, float]]) -> Dict[str, Dict[str, float]]:
@@ -701,19 +712,35 @@ def summarize_phases(history: List[Dict[str, float]]) -> Dict[str, Dict[str, flo
 
 
 def get_git_commit(repo_root: Path) -> Optional[str]:
+    git_executable = shutil.which("git")
+    if not git_executable:
+        return None
+
     try:
         result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
+            [git_executable, "rev-parse", "HEAD"],
             cwd=str(repo_root),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,
             text=True,
+            timeout=5,
         )
-        if result.returncode == 0:
-            return result.stdout.strip()
-    except Exception:
+    except (OSError, subprocess.SubprocessError) as exc:
+        LOGGER.warning("Failed to read git commit from %s: %s", repo_root, exc)
         return None
+
+    if result.returncode == 0:
+        commit = result.stdout.strip()
+        return commit or None
+
+    if result.stderr:
+        LOGGER.debug(
+            "git rev-parse failed in %s with code %s: %s",
+            repo_root,
+            result.returncode,
+            result.stderr.strip(),
+        )
     return None
 
 
@@ -1116,11 +1143,11 @@ def main() -> None:
                 betas=betas,
             )
         return torch.optim.Adam(
-        model.parameters(),
-        lr=lr,
-        weight_decay=weight_decay,
-        betas=betas,
-    )
+            model.parameters(),
+            lr=lr,
+            weight_decay=weight_decay,
+            betas=betas,
+        )
 
     def make_optimizer_split(
         backbone_params: List[torch.nn.Parameter],
@@ -1128,6 +1155,9 @@ def main() -> None:
         backbone_lr: float,
         head_lr: float,
     ) -> torch.optim.Optimizer:
+        split_default_lr = float(
+            optim_cfg.get("split_default_lr", optim_cfg.get("lr", 1e-3))
+        )
         params = []
         if backbone_params:
             params.append(
@@ -1146,8 +1176,18 @@ def main() -> None:
                 }
             )
         if optim_cfg.get("name", "adamw").lower() == "adamw":
-            return torch.optim.AdamW(params, betas=betas)
-        return torch.optim.Adam(params)
+            return torch.optim.AdamW(
+                params,
+                lr=split_default_lr,
+                weight_decay=weight_decay,
+                betas=betas,
+            )
+        return torch.optim.Adam(
+            params,
+            lr=split_default_lr,
+            weight_decay=weight_decay,
+            betas=betas,
+        )
 
     sched_cfg = cfg.get("scheduler", {})
 

@@ -46,6 +46,7 @@ CNN/**/artifacts/
 CNN/**/wandb/
 CNN/**/mlruns/
 CNN/**/lightning_logs/
+CNN/services
 
 # Keep data scripts/configs tracked, ignore all other dataset content
 CNN/data/**

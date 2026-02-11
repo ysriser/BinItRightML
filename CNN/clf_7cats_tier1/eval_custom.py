@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -20,6 +21,7 @@ from torchvision import transforms
 from tqdm import tqdm
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp", ".heic", ".heif"}
+LOGGER = logging.getLogger(__name__)
 
 try:
     import pillow_heif
@@ -223,8 +225,12 @@ def main() -> None:
         fig.tight_layout()
         fig.savefig(output_dir / "confusion.png", dpi=150)
         plt.close(fig)
-    except Exception:
-        pass
+    except Exception as exc:
+        LOGGER.warning(
+            "Failed to render confusion matrix at %s: %s",
+            output_dir / "confusion.png",
+            exc,
+        )
 
     print(f"Saved outputs -> {output_dir}")
     print(f"Top1={top1:.4f} | Macro-F1={macro_f1:.4f} | Total={total}")

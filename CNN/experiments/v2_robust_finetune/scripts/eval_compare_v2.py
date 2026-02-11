@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import logging
 import sys
 from dataclasses import dataclass
 from datetime import datetime
@@ -38,6 +39,7 @@ IMAGE_EXTS = {
     ".heic",
     ".heif",
 }
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -253,8 +255,12 @@ def save_confusion(
         fig.tight_layout()
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
-    except Exception:
-        pass
+    except Exception as exc:
+        LOGGER.warning(
+            "Failed to render confusion matrix at %s: %s",
+            out_path,
+            exc,
+        )
 
 
 def softmax(logits: np.ndarray) -> np.ndarray:

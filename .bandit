@@ -1,0 +1,29 @@
+# Bandit Configuration for AI/ML Training Scripts
+# ------------------------------------------------
+# This file defines the security policy for Python scripts within this repo.
+
+# EXCLUSIONS
+# These rules are skipped because they represent standard patterns in 
+# machine learning that do not pose a security risk in this environment.
+skips:
+  # B311: Standard pseudo-random generators
+  # EXPLANATION: We use 'random' for reproducible data shuffling and image 
+  # augmentations. Cryptographic security is not required for these tasks, 
+  # and secure alternatives (CSPRNGs) do not support seeding for reproducibility.
+  - B311
+
+  # B404: Import of subprocess module
+  # EXPLANATION: High-level import is flagged as a risk for command injection. 
+  # We use this module strictly for internal metadata collection (e.g., git hashes).
+  - B404
+
+  # B603: subprocess call - check for execution of untrusted input
+  # EXPLANATION: We only execute hardcoded command lists (e.g., ["git", "rev-parse"]).
+  # No untrusted user input is passed to the system shell.
+  - B603
+
+# TARGETS
+# Target specific folders to prevent the scanner from wasting time on 
+# environments or unrelated data directories.
+targets:
+  - 'CNN/experiments'

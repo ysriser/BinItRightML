@@ -21,6 +21,22 @@ from torchvision import transforms
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def load_torch_weights(path: Path, map_location: str = "cpu"):
+    """Load state dict with safe defaults and backward compatibility."""
+    try:
+        return torch.load(  # nosec B614 - loading trusted internal training artifact
+            path,
+            map_location=map_location,
+            weights_only=True,
+        )
+    except TypeError:
+        # Older torch versions do not support weights_only.
+        return torch.load(  # nosec B614 - loading trusted internal training artifact
+            path,
+            map_location=map_location,
+        )
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Export Tier-1 ONNX + optional ORT check")
     p.add_argument("--model-dir", type=Path, default=ROOT / "models")
@@ -58,7 +74,7 @@ def load_model(model_dir: Path) -> Tuple[torch.nn.Module, Dict[str, Any], List[s
     labels = label_map["labels"]
 
     model = timm.create_model(backbone, pretrained=False, num_classes=len(labels))
-    state = torch.load(model_dir / "tier1_best.pt", map_location="cpu")
+    state = load_torch_weights(model_dir / "tier1_best.pt", map_location="cpu")
     model.load_state_dict(state)
     model.eval()
     return model, infer_cfg, labels

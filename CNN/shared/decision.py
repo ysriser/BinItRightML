@@ -46,6 +46,59 @@ def _as_float(value: Any) -> float | None:
     return float(value)
 
 
+def _append_base_reasons(
+    reasons: List[str],
+    top1_label: str,
+    top1_prob: float,
+    margin: float,
+    entropy: float,
+    conf_th: float | None,
+    margin_th: float | None,
+    entropy_th: float | None,
+) -> None:
+    if top1_label == "other_uncertain":
+        reasons.append("label_other_uncertain")
+    if conf_th is not None and top1_prob < conf_th:
+        reasons.append("low_confidence")
+    if margin_th is not None and margin < margin_th:
+        reasons.append("small_margin")
+    if entropy_th is not None and entropy > entropy_th:
+        reasons.append("high_entropy")
+
+
+def _append_strict_reasons(
+    reasons: List[str],
+    strict: Any,
+    top1_label: str,
+    top1_prob: float,
+    margin: float,
+    entropy: float,
+) -> None:
+    if not isinstance(strict, dict) or top1_label not in strict:
+        return
+    strict_cfg = strict[top1_label] or {}
+    strict_conf = _as_float(strict_cfg.get("conf"))
+    strict_margin = _as_float(strict_cfg.get("margin"))
+    strict_entropy = _as_float(strict_cfg.get("entropy"))
+    if strict_conf is not None and top1_prob < strict_conf:
+        reasons.append("strict_class_low_conf")
+    if strict_margin is not None and margin < strict_margin:
+        reasons.append("strict_class_low_margin")
+    if strict_entropy is not None and entropy > strict_entropy:
+        reasons.append("strict_class_high_entropy")
+
+
+def _resolve_final_label(
+    top1_label: str,
+    labels: Sequence[str],
+    escalate: bool,
+    reject_to_other: bool,
+) -> str:
+    if escalate and reject_to_other and "other_uncertain" in labels:
+        return "other_uncertain"
+    return top1_label
+
+
 def decide_from_probs(
     probs: np.ndarray,
     labels: Sequence[str],
@@ -67,32 +120,32 @@ def decide_from_probs(
     entropy_th = _as_float(thresholds.get("entropy"))
     reject_to_other = bool(thresholds.get("reject_to_other", True))
 
-    if top1_label == "other_uncertain":
-        reasons.append("label_other_uncertain")
-    if conf_th is not None and top1_prob < conf_th:
-        reasons.append("low_confidence")
-    if margin_th is not None and margin < margin_th:
-        reasons.append("small_margin")
-    if entropy_th is not None and entropy > entropy_th:
-        reasons.append("high_entropy")
-
-    strict = thresholds.get("strict_per_class", {}) or {}
-    if isinstance(strict, dict) and top1_label in strict:
-        strict_cfg = strict[top1_label] or {}
-        strict_conf = _as_float(strict_cfg.get("conf"))
-        strict_margin = _as_float(strict_cfg.get("margin"))
-        strict_entropy = _as_float(strict_cfg.get("entropy"))
-        if strict_conf is not None and top1_prob < strict_conf:
-            reasons.append("strict_class_low_conf")
-        if strict_margin is not None and margin < strict_margin:
-            reasons.append("strict_class_low_margin")
-        if strict_entropy is not None and entropy > strict_entropy:
-            reasons.append("strict_class_high_entropy")
+    _append_base_reasons(
+        reasons,
+        top1_label,
+        top1_prob,
+        margin,
+        entropy,
+        conf_th,
+        margin_th,
+        entropy_th,
+    )
+    _append_strict_reasons(
+        reasons,
+        thresholds.get("strict_per_class", {}) or {},
+        top1_label,
+        top1_prob,
+        margin,
+        entropy,
+    )
 
     escalate = len(reasons) > 0
-    final_label = top1_label
-    if escalate and reject_to_other and "other_uncertain" in labels:
-        final_label = "other_uncertain"
+    final_label = _resolve_final_label(
+        top1_label=top1_label,
+        labels=labels,
+        escalate=escalate,
+        reject_to_other=reject_to_other,
+    )
 
     return {
         "final_label": final_label,

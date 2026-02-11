@@ -119,6 +119,11 @@ REASON_CODE_MAP: Dict[str, str] = {
     "strict_class_high_entropy": "STRICT_CLASS_HIGH_ENTROPY",
 }
 
+E_WASTE_COLLECTION_INSTRUCTION = (
+    "If it contains electronics/battery, bring to an e-waste collection point."
+)
+EMPTY_CONTENTS_INSTRUCTION = "Empty contents."
+
 
 def map_reason_codes(reasons: List[str]) -> List[str]:
     codes: List[str] = []
@@ -164,7 +169,7 @@ TIER1_RULES: Dict[str, Dict[str, Any]] = {
         "recyclable": False,
         "instructions": [
             "Dispose as general waste to avoid contaminating recycling.",
-            "If it contains electronics/battery, bring to an e-waste collection point.",
+            E_WASTE_COLLECTION_INSTRUCTION,
             "If it is mostly fabric, bag it for textile drop-off.",
             "If you need confirmation, open the Questionnaire flow in the app.",
         ],
@@ -215,7 +220,7 @@ def slugify(value: str) -> str:
 #   default
 INSTRUCTION_TEMPLATES: Dict[str, List[str]] = {
     "plastic.blue.clean": [
-        "Empty contents.",
+        EMPTY_CONTENTS_INSTRUCTION,
         "Rinse the container.",
         "Remove caps if possible.",
     ],
@@ -240,7 +245,7 @@ INSTRUCTION_TEMPLATES: Dict[str, List[str]] = {
         "Do not place wet/dirty paper in the blue bin.",
     ],
     "metal.blue.clean": [
-        "Empty contents.",
+        EMPTY_CONTENTS_INSTRUCTION,
         "Rinse to remove residue.",
         "Crush cans if safe to do so.",
     ],
@@ -250,7 +255,7 @@ INSTRUCTION_TEMPLATES: Dict[str, List[str]] = {
         "Rinse if possible before recycling.",
     ],
     "glass.blue.clean": [
-        "Empty contents.",
+        EMPTY_CONTENTS_INSTRUCTION,
         "Rinse the glass container.",
         "Handle carefully to avoid breaking.",
     ],
@@ -271,12 +276,12 @@ INSTRUCTION_TEMPLATES: Dict[str, List[str]] = {
     ],
     "other_uncertain.unknown.any": [
         "Dispose as general waste to avoid contaminating recycling.",
-        "If it contains electronics/battery, bring to an e-waste collection point.",
+        E_WASTE_COLLECTION_INSTRUCTION,
         "If it is mostly fabric, bag it for textile drop-off.",
     ],
     "default": [
         "If uncertain, dispose as general waste to avoid contaminating recycling.",
-        "If it contains electronics/battery, bring to an e-waste collection point.",
+        E_WASTE_COLLECTION_INSTRUCTION,
         "Keep items clean and dry before using the blue recycling bin.",
         "If you need confirmation, open the Questionnaire flow in the app.",
     ],

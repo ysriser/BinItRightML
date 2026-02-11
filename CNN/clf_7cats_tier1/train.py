@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import logging
 import random
 from datetime import datetime
 from pathlib import Path
@@ -39,6 +40,7 @@ MODEL_ALIASES = {
     "mobilenet_v3_large": "mobilenetv3_large_100",
     "mobilenetv3_large_100": "mobilenetv3_large_100",
 }
+LOGGER = logging.getLogger(__name__)
 
 
 def set_seed(seed: int) -> None:
@@ -97,7 +99,7 @@ class CsvDataset(Dataset):
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int]:
         if not self.items:
             raise ValueError("Dataset is empty after filtering bad images.")
-        for attempt in range(max(1, self.max_retry)):
+        for _ in range(max(1, self.max_retry)):
             path, label = self.items[idx]
             try:
                 image = Image.open(path).convert("RGBA").convert("RGB")
@@ -128,8 +130,12 @@ class CsvDataset(Dataset):
             self.bad_list_path.parent.mkdir(parents=True, exist_ok=True)
             with self.bad_list_path.open("a", encoding="utf-8") as f:
                 f.write(str(path) + "\n")
-        except Exception:
-            pass
+        except OSError as exc:
+            LOGGER.warning(
+                "Failed to append bad image path to %s: %s",
+                self.bad_list_path,
+                exc,
+            )
 
 
 def build_transforms(img_size: int, mean: List[float], std: List[float], aug_cfg: dict):
@@ -257,8 +263,12 @@ def save_history(history: List[Dict[str, float]], run_dir: Path) -> None:
         fig.tight_layout()
         fig.savefig(run_dir / "training_curves.png", dpi=150)
         plt.close(fig)
-    except Exception:
-        pass
+    except Exception as exc:
+        LOGGER.warning(
+            "Failed to render training curves at %s: %s",
+            run_dir / "training_curves.png",
+            exc,
+        )
 
 
 def parse_args() -> argparse.Namespace:

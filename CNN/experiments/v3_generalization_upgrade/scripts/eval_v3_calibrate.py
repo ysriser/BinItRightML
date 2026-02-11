@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import logging
 
 import random
 from collections import defaultdict
@@ -39,6 +40,7 @@ IMAGE_EXTS = {
     ".heic",
     ".heif",
 }
+LOGGER = logging.getLogger(__name__)
 
 
 def load_yaml(path: Path) -> dict:
@@ -60,27 +62,33 @@ def save_json(path: Path, payload: dict) -> None:
         json.dump(payload, f, indent=2, ensure_ascii=False)
 
 
-def list_items(data_dir: Path, label_to_idx: Dict[str, int]) -> List[Tuple[Path, int]]:
-    manifest = data_dir / "manifest.csv"
-    if manifest.exists():
-        items: List[Tuple[Path, int]] = []
-        with manifest.open("r", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                label = row.get("label") or row.get("class") or row.get("final_label")
-                if label not in label_to_idx:
-                    continue
-                raw_path = row.get("filepath")
-                if not raw_path:
-                    continue
-                path = Path(raw_path)
-                if not path.is_absolute():
-                    path = manifest.parent / path
-                if path.exists():
-                    items.append((path, label_to_idx[label]))
-        return items
+def _list_items_from_manifest(
+    manifest: Path,
+    label_to_idx: Dict[str, int],
+) -> List[Tuple[Path, int]]:
+    items: List[Tuple[Path, int]] = []
+    with manifest.open("r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            label = row.get("label") or row.get("class") or row.get("final_label")
+            if label not in label_to_idx:
+                continue
+            raw_path = row.get("filepath")
+            if not raw_path:
+                continue
+            path = Path(raw_path)
+            if not path.is_absolute():
+                path = manifest.parent / path
+            if path.exists():
+                items.append((path, label_to_idx[label]))
+    return items
 
-    items = []
+
+def _list_items_from_class_dirs(
+    data_dir: Path,
+    label_to_idx: Dict[str, int],
+) -> List[Tuple[Path, int]]:
+    items: List[Tuple[Path, int]] = []
     for class_dir in sorted(p for p in data_dir.iterdir() if p.is_dir()):
         if class_dir.name not in label_to_idx:
             continue
@@ -89,6 +97,13 @@ def list_items(data_dir: Path, label_to_idx: Dict[str, int]) -> List[Tuple[Path,
             if image_path.is_file() and image_path.suffix.lower() in IMAGE_EXTS:
                 items.append((image_path, idx))
     return items
+
+
+def list_items(data_dir: Path, label_to_idx: Dict[str, int]) -> List[Tuple[Path, int]]:
+    manifest = data_dir / "manifest.csv"
+    if manifest.exists():
+        return _list_items_from_manifest(manifest, label_to_idx)
+    return _list_items_from_class_dirs(data_dir, label_to_idx)
 
 
 def stratified_split(
@@ -265,6 +280,47 @@ def apply_reject_rules(
     return final_preds, escalated
 
 
+def _build_sweep_row(
+    probs: np.ndarray,
+    labels: np.ndarray,
+    class_names: Sequence[str],
+    strict_per_class: Dict[str, float],
+    conf: float,
+    margin: float,
+) -> dict:
+    pred_after, escalated = apply_reject_rules(
+        probs=probs,
+        class_names=class_names,
+        conf=float(round(conf, 4)),
+        margin=float(round(margin, 4)),
+        strict_per_class=strict_per_class,
+    )
+    keep_idx = np.nonzero(~escalated)[0]
+    coverage = float(len(keep_idx) / len(labels)) if len(labels) else 0.0
+    selective_acc = (
+        float(np.mean(pred_after[keep_idx] == labels[keep_idx])) if len(keep_idx) else 0.0
+    )
+    overall_top1 = float(np.mean(pred_after == labels)) if len(labels) else 0.0
+    return {
+        "conf": round(float(conf), 4),
+        "margin": round(float(margin), 4),
+        "coverage": round(coverage, 6),
+        "selective_acc": round(selective_acc, 6),
+        "overall_top1_after_reject": round(overall_top1, 6),
+    }
+
+
+def _is_better_sweep_candidate(candidate: dict, current_best: dict | None) -> bool:
+    if current_best is None:
+        return True
+    if candidate["coverage"] > current_best["coverage"]:
+        return True
+    return (
+        candidate["coverage"] == current_best["coverage"]
+        and candidate["selective_acc"] > current_best["selective_acc"]
+    )
+
+
 def sweep_thresholds(
     probs: np.ndarray,
     labels: np.ndarray,
@@ -290,36 +346,18 @@ def sweep_thresholds(
 
     for conf in conf_values:
         for margin in margin_values:
-            pred_after, escalated = apply_reject_rules(
+            row = _build_sweep_row(
                 probs=probs,
+                labels=labels,
                 class_names=class_names,
-                conf=float(round(conf, 4)),
-                margin=float(round(margin, 4)),
                 strict_per_class=strict_per_class,
+                conf=float(conf),
+                margin=float(margin),
             )
-            keep_idx = np.nonzero(~escalated)[0]
-            coverage = float(len(keep_idx) / len(labels)) if len(labels) else 0.0
-            selective_acc = (
-                float(np.mean(pred_after[keep_idx] == labels[keep_idx])) if len(keep_idx) else 0.0
-            )
-            overall_top1 = float(np.mean(pred_after == labels)) if len(labels) else 0.0
-
-            row = {
-                "conf": round(float(conf), 4),
-                "margin": round(float(margin), 4),
-                "coverage": round(coverage, 6),
-                "selective_acc": round(selective_acc, 6),
-                "overall_top1_after_reject": round(overall_top1, 6),
-            }
             rows.append(row)
 
-            if selective_acc >= target:
-                if best is None:
-                    best = row
-                elif row["coverage"] > best["coverage"]:
-                    best = row
-                elif row["coverage"] == best["coverage"] and row["selective_acc"] > best["selective_acc"]:
-                    best = row
+            if row["selective_acc"] >= target and _is_better_sweep_candidate(row, best):
+                best = row
 
     if best is None and rows:
         rows_sorted = sorted(rows, key=lambda x: (x["selective_acc"], x["coverage"]), reverse=True)
@@ -350,8 +388,12 @@ def save_confusion_image(
         out_path.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(out_path, dpi=140)
         plt.close(fig)
-    except Exception:
-        pass
+    except Exception as exc:
+        LOGGER.warning(
+            "Failed to render confusion matrix at %s: %s",
+            out_path,
+            exc,
+        )
 
 
 def save_reliability_plot(
@@ -396,8 +438,12 @@ def save_reliability_plot(
         out_path.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(out_path, dpi=140)
         plt.close(fig)
-    except Exception:
-        pass
+    except Exception as exc:
+        LOGGER.warning(
+            "Failed to render reliability plot at %s: %s",
+            out_path,
+            exc,
+        )
 
 
 def parse_args() -> argparse.Namespace:

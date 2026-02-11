@@ -91,6 +91,45 @@ def list_images_from_folder(data_dir: Path) -> List[Path]:
     return items
 
 
+def _list_items_from_manifest(manifest_path: Path) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    with manifest_path.open("r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        if not reader.fieldnames:
+            raise ValueError("Manifest must include headers")
+        fieldnames = {name.lower(): name for name in reader.fieldnames}
+        if "filepath" not in fieldnames:
+            raise ValueError("Manifest must include 'filepath' column")
+        label_field = (
+            fieldnames.get("label")
+            or fieldnames.get("class")
+            or fieldnames.get("final_label")
+        )
+        for row in reader:
+            raw_path = row[fieldnames["filepath"]]
+            path = Path(raw_path)
+            if not path.is_absolute():
+                path = manifest_path.parent / path
+            label = row[label_field] if label_field else None
+            items.append(
+                {
+                    "path": path,
+                    "label": label,
+                    "image_id": raw_path,
+                }
+            )
+    return items
+
+
+def _list_items_from_folder(images_dir: Path) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    for path in list_images_from_folder(images_dir):
+        image_id = str(path.relative_to(images_dir))
+        label = None if path.parent == images_dir else path.parent.name
+        items.append({"path": path, "label": label, "image_id": image_id})
+    return items
+
+
 def list_items(
     images_dir: Optional[Path],
     manifest_path: Optional[Path],
@@ -98,41 +137,12 @@ def list_items(
     if images_dir is None and manifest_path is None:
         raise ValueError("Provide --images or --manifest")
 
-    items: List[Dict[str, Any]] = []
     if manifest_path is not None:
-        with manifest_path.open("r", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            if not reader.fieldnames:
-                raise ValueError("Manifest must include headers")
-            fieldnames = {name.lower(): name for name in reader.fieldnames}
-            if "filepath" not in fieldnames:
-                raise ValueError("Manifest must include 'filepath' column")
-            label_field = (
-                fieldnames.get("label")
-                or fieldnames.get("class")
-                or fieldnames.get("final_label")
-            )
-            for row in reader:
-                raw_path = row[fieldnames["filepath"]]
-                path = Path(raw_path)
-                if not path.is_absolute():
-                    path = manifest_path.parent / path
-                label = row[label_field] if label_field else None
-                items.append(
-                    {
-                        "path": path,
-                        "label": label,
-                        "image_id": raw_path,
-                    }
-                )
-        return items
+        return _list_items_from_manifest(manifest_path)
 
     if images_dir is not None:
-        for path in list_images_from_folder(images_dir):
-            image_id = str(path.relative_to(images_dir))
-            label = None if path.parent == images_dir else path.parent.name
-            items.append({"path": path, "label": label, "image_id": image_id})
-    return items
+        return _list_items_from_folder(images_dir)
+    return []
 
 
 def resize_shorter_side(

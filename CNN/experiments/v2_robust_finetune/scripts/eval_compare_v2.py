@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import logging
 import sys
 from dataclasses import dataclass
 from datetime import datetime
@@ -38,6 +39,7 @@ IMAGE_EXTS = {
     ".heic",
     ".heif",
 }
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -253,8 +255,12 @@ def save_confusion(
         fig.tight_layout()
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
-    except Exception:
-        pass
+    except Exception as exc:
+        LOGGER.warning(
+            "Failed to render confusion matrix at %s: %s",
+            out_path,
+            exc,
+        )
 
 
 def softmax(logits: np.ndarray) -> np.ndarray:
@@ -304,6 +310,35 @@ def selective_metrics(
     return {"coverage": coverage, "selective_acc": selective_acc}
 
 
+def _evaluate_threshold_candidate(
+    decision_utils,
+    probs_list: List[np.ndarray],
+    labels: List[int],
+    class_names: List[str],
+    thresholds: dict,
+) -> Dict[str, float]:
+    preds: List[int] = []
+    escalated: List[bool] = []
+    for probs in probs_list:
+        result = decision_utils.decide_from_probs(
+            probs,
+            class_names,
+            thresholds,
+        )
+        preds.append(class_names.index(result["final_label"]))
+        escalated.append(bool(result["escalate"]))
+
+    total = max(1, len(labels))
+    keep = [i for i, is_escalated in enumerate(escalated) if not is_escalated]
+    coverage = len(keep) / total
+    if keep:
+        correct = sum(int(preds[i] == labels[i]) for i in keep)
+        selective_acc = correct / len(keep)
+    else:
+        selective_acc = 0.0
+    return {"coverage": coverage, "selective_acc": selective_acc}
+
+
 def sweep_thresholds(
     probs_list: List[np.ndarray],
     labels: List[int],
@@ -320,25 +355,15 @@ def sweep_thresholds(
             thresholds = dict(base_thresholds)
             thresholds["conf"] = conf
             thresholds["margin"] = margin
-            preds = []
-            escalated = []
-            for probs in probs_list:
-                result = decision_utils.decide_from_probs(
-                    probs,
-                    class_names,
-                    thresholds,
-                )
-                preds.append(class_names.index(result["final_label"]))
-                escalated.append(bool(result["escalate"]))
-
-            total = max(1, len(labels))
-            keep = [i for i, e in enumerate(escalated) if not e]
-            coverage = len(keep) / total
-            if keep:
-                correct = sum(int(preds[i] == labels[i]) for i in keep)
-                selective_acc = correct / len(keep)
-            else:
-                selective_acc = 0.0
+            stats = _evaluate_threshold_candidate(
+                decision_utils=decision_utils,
+                probs_list=probs_list,
+                labels=labels,
+                class_names=class_names,
+                thresholds=thresholds,
+            )
+            coverage = stats["coverage"]
+            selective_acc = stats["selective_acc"]
 
             meets = selective_acc >= 0.95
             candidate = {

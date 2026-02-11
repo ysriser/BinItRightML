@@ -281,6 +281,7 @@ def sweep_thresholds(
         float(sweep_cfg.get("margin_max", 0.30)) + 1e-9,
         float(sweep_cfg.get("margin_step", 0.03)),
     )
+    
     strict_per_class = sweep_cfg.get("strict_per_class", {}) or {}
     target = float(sweep_cfg.get("target_selective_acc", 0.95))
 

@@ -13,7 +13,7 @@ import warnings
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import timm
@@ -68,6 +68,79 @@ NUMPY_RNG = np.random.default_rng(DEFAULT_SEED)
 class DomainSplit:
     train: List[Tuple[Path, int]]
     val: List[Tuple[Path, int]]
+
+
+@dataclass
+class RuntimeSettings:
+    model: torch.nn.Module
+    num_classes: int
+    use_amp: bool
+    grad_clip: float
+    show_progress: bool
+    device: torch.device
+    scaler: torch.amp.GradScaler
+    focal_loss: nn.Module
+    ce_loss: nn.Module
+    use_focal: bool
+
+
+@dataclass
+class TrackingState:
+    best_f1: float
+    best_state: Optional[dict]
+    best_metrics: Dict[str, float]
+    best_epoch: int
+    best_source: str
+    no_improve: int
+
+
+@dataclass
+class PhaseAPlan:
+    epochs: int
+    train_loader: DataLoader
+    val_loader: DataLoader
+    domain_val_loader: DataLoader
+    use_domain_val: bool
+    optimizer: torch.optim.Optimizer
+    scheduler: object | None
+    mix_cfg: dict
+    history: List[Dict[str, float]]
+    wb_run: Optional["wandb.sdk.wandb_run.Run"]
+    early_patience: int
+
+
+@dataclass
+class PhaseBPlan:
+    phase_label: str
+    start_epoch: int
+    stage_epochs: int
+    phase_a_epochs: int
+    phase_b_total: int
+    train_loader: DataLoader
+    val_loader: DataLoader
+    domain_val_loader: DataLoader
+    use_domain_val: bool
+    optimizer: torch.optim.Optimizer
+    scheduler: object | None
+    mix_cfg: dict
+    history: List[Dict[str, float]]
+    wb_run: Optional["wandb.sdk.wandb_run.Run"]
+    early_patience: int
+
+
+@dataclass
+class PhaseAExecutionContext:
+    phase_b_only: bool
+    phase_b_cfg: dict
+    models_dir: Path
+    artifact_dir: Path
+    device: torch.device
+    phase_a_cfg: dict
+    plan: PhaseAPlan
+    optim_cfg: dict
+    weight_decay: float
+    betas: Tuple[float, ...]
+    sched_cfg: dict
 
 
 def set_seed(seed: int) -> None:
@@ -943,60 +1016,68 @@ def make_scheduler(
     )
 
 
+def _compute_batch_loss(
+    runtime: RuntimeSettings,
+    images: torch.Tensor,
+    labels_batch: torch.Tensor,
+    mix_cfg: dict,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    with torch.amp.autocast(device_type="cuda", enabled=runtime.use_amp):
+        mixed_images, mixed_targets, mixed = apply_mixup_cutmix(
+            images,
+            labels_batch,
+            num_classes=runtime.num_classes,
+            mixup_cfg=mix_cfg,
+        )
+        logits = runtime.model(mixed_images)
+        if mixed:
+            loss = soft_target_ce(logits, mixed_targets)
+        else:
+            loss = runtime.focal_loss(logits, labels_batch) if runtime.use_focal else runtime.ce_loss(logits, labels_batch)
+    return logits, loss
+
+
+def _apply_optimizer_step(
+    runtime: RuntimeSettings,
+    optimizer: torch.optim.Optimizer,
+    loss: torch.Tensor,
+) -> None:
+    if runtime.use_amp:
+        runtime.scaler.scale(loss).backward()
+        if runtime.grad_clip > 0:
+            runtime.scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(runtime.model.parameters(), runtime.grad_clip)
+        runtime.scaler.step(optimizer)
+        runtime.scaler.update()
+        return
+
+    loss.backward()
+    if runtime.grad_clip > 0:
+        torch.nn.utils.clip_grad_norm_(runtime.model.parameters(), runtime.grad_clip)
+    optimizer.step()
+
+
 def run_epoch(
-    model: torch.nn.Module,
+    runtime: RuntimeSettings,
     loader: DataLoader,
     optimizer: torch.optim.Optimizer,
     mix_cfg: dict,
-    num_classes: int,
-    use_amp: bool,
-    grad_clip: float,
-    show_progress: bool,
-    device: torch.device,
-    scaler: torch.amp.GradScaler,
-    focal_loss: nn.Module,
-    ce_loss: nn.Module,
-    use_focal: bool,
 ) -> Tuple[float, float]:
-    model.train()
+    runtime.model.train()
     total_loss = 0.0
     total_correct = 0
     total_samples = 0
 
     iterator = loader
-    if show_progress:
+    if runtime.show_progress:
         iterator = tqdm(loader, desc="train", ncols=100)
 
     for images, labels_batch in iterator:
-        images = images.to(device)
-        labels_batch = labels_batch.to(device)
+        images = images.to(runtime.device)
+        labels_batch = labels_batch.to(runtime.device)
         optimizer.zero_grad(set_to_none=True)
-
-        with torch.amp.autocast(device_type="cuda", enabled=use_amp):
-            mixed_images, mixed_targets, mixed = apply_mixup_cutmix(
-                images,
-                labels_batch,
-                num_classes=num_classes,
-                mixup_cfg=mix_cfg,
-            )
-            logits = model(mixed_images)
-            if mixed:
-                loss = soft_target_ce(logits, mixed_targets)
-            else:
-                loss = focal_loss(logits, labels_batch) if use_focal else ce_loss(logits, labels_batch)
-
-        if use_amp:
-            scaler.scale(loss).backward()
-            if grad_clip > 0:
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-            scaler.step(optimizer)
-            scaler.update()
-        else:
-            loss.backward()
-            if grad_clip > 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-            optimizer.step()
+        logits, loss = _compute_batch_loss(runtime, images, labels_batch, mix_cfg)
+        _apply_optimizer_step(runtime, optimizer, loss)
 
         total_loss += loss.item() * labels_batch.size(0)
         total_samples += labels_batch.size(0)
@@ -1025,26 +1106,20 @@ def set_requires_grad(params: List[torch.nn.Parameter], value: bool) -> None:
 
 
 def update_best_tracking(
+    state: TrackingState,
     model: torch.nn.Module,
     source_metrics: Dict[str, float],
-    best_f1: float,
-    best_state: Optional[dict],
-    best_metrics: Dict[str, float],
-    best_epoch: int,
-    best_source: str,
     epoch: int,
     source_name: str,
-) -> Tuple[float, Optional[dict], Dict[str, float], int, str, bool]:
-    if source_metrics["macro_f1"] <= best_f1:
-        return best_f1, best_state, best_metrics, best_epoch, best_source, False
-    return (
-        source_metrics["macro_f1"],
-        model.state_dict(),
-        source_metrics,
-        epoch,
-        source_name,
-        True,
-    )
+) -> bool:
+    if source_metrics["macro_f1"] <= state.best_f1:
+        return False
+    state.best_f1 = source_metrics["macro_f1"]
+    state.best_state = model.state_dict()
+    state.best_metrics = source_metrics
+    state.best_epoch = epoch
+    state.best_source = source_name
+    return True
 
 
 def append_phase_history(
@@ -1113,85 +1188,40 @@ def maybe_log_domain_metrics(
 
 
 def run_phase_a_epochs(
-    model: torch.nn.Module,
-    phase_a_epochs: int,
-    train_loader: DataLoader,
-    val_loader: DataLoader,
-    domain_val_loader: DataLoader,
-    use_domain_val: bool,
-    run_epoch_fn: Callable[..., Tuple[float, float]],
-    num_classes: int,
-    use_amp: bool,
-    grad_clip: float,
-    show_progress: bool,
-    device: torch.device,
-    scaler: torch.amp.GradScaler,
-    focal_loss: nn.Module,
-    ce_loss: nn.Module,
-    use_focal: bool,
-    optimizer: torch.optim.Optimizer,
-    scheduler,
-    mix_cfg_a: dict,
-    history: List[Dict[str, float]],
-    wb_run: Optional["wandb.sdk.wandb_run.Run"],
-    best_f1: float,
-    best_state: Optional[dict],
-    best_metrics: Dict[str, float],
-    best_epoch: int,
-    best_source: str,
-    no_improve: int,
-    early_patience: int,
-) -> Tuple[float, Optional[dict], Dict[str, float], int, str, int]:
-    for epoch in range(1, phase_a_epochs + 1):
-        train_loss, train_acc = run_epoch_fn(
-            model=model,
-            loader=train_loader,
-            optimizer=optimizer,
-            mix_cfg=mix_cfg_a,
-            num_classes=num_classes,
-            use_amp=use_amp,
-            grad_clip=grad_clip,
-            show_progress=show_progress,
-            device=device,
-            scaler=scaler,
-            focal_loss=focal_loss,
-            ce_loss=ce_loss,
-            use_focal=use_focal,
+    runtime: RuntimeSettings,
+    plan: PhaseAPlan,
+    state: TrackingState,
+) -> TrackingState:
+    for epoch in range(1, plan.epochs + 1):
+        train_loss, train_acc = run_epoch(
+            runtime=runtime,
+            loader=plan.train_loader,
+            optimizer=plan.optimizer,
+            mix_cfg=plan.mix_cfg,
         )
-        if scheduler:
-            scheduler.step()
+        if plan.scheduler:
+            plan.scheduler.step()
 
-        val_metrics, _, _ = evaluate(model, val_loader, device)
+        val_metrics, _, _ = evaluate(runtime.model, plan.val_loader, runtime.device)
         domain_metrics = None
         source_metrics = val_metrics
         source_name = "val"
-        if use_domain_val:
-            domain_metrics, _, _ = evaluate(model, domain_val_loader, device)
+        if plan.use_domain_val:
+            domain_metrics, _, _ = evaluate(runtime.model, plan.domain_val_loader, runtime.device)
             source_metrics = domain_metrics
             source_name = "domain_val"
 
-        (
-            best_f1,
-            best_state,
-            best_metrics,
-            best_epoch,
-            best_source,
-            improved,
-        ) = update_best_tracking(
-            model=model,
+        improved = update_best_tracking(
+            state=state,
+            model=runtime.model,
             source_metrics=source_metrics,
-            best_f1=best_f1,
-            best_state=best_state,
-            best_metrics=best_metrics,
-            best_epoch=best_epoch,
-            best_source=best_source,
             epoch=epoch,
             source_name=source_name,
         )
-        no_improve = 0 if improved else no_improve + 1
+        state.no_improve = 0 if improved else state.no_improve + 1
 
         append_phase_history(
-            history=history,
+            history=plan.history,
             phase=1,
             epoch=epoch,
             global_epoch=epoch,
@@ -1200,7 +1230,7 @@ def run_phase_a_epochs(
             source_metrics=val_metrics,
         )
         msg = (
-            f"Epoch {epoch}/{phase_a_epochs} "
+            f"Epoch {epoch}/{plan.epochs} "
             f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} "
             f"val_top1={val_metrics['top1']:.4f} "
             f"val_top3={val_metrics['top3']:.4f} "
@@ -1214,235 +1244,119 @@ def run_phase_a_epochs(
             )
         print(msg)
         log_phase_epoch(
-            wb_run=wb_run,
+            wb_run=plan.wb_run,
             phase=1,
             epoch=epoch,
             global_epoch=epoch,
             train_loss=train_loss,
             train_acc=train_acc,
             source_metrics=val_metrics,
-            optimizer=optimizer,
+            optimizer=plan.optimizer,
         )
-        maybe_log_domain_metrics(wb_run, domain_metrics)
-        if early_patience > 0 and no_improve >= early_patience:
+        maybe_log_domain_metrics(plan.wb_run, domain_metrics)
+        if plan.early_patience > 0 and state.no_improve >= plan.early_patience:
             print("Early stopping in Phase A")
             break
 
-    return best_f1, best_state, best_metrics, best_epoch, best_source, no_improve
+    return state
 
 
 def run_phase_b_substage(
-    phase_label: str,
-    model: torch.nn.Module,
-    start_epoch: int,
-    stage_epochs: int,
-    phase_a_epochs: int,
-    phase_b_total: int,
-    run_epoch_fn: Callable[..., Tuple[float, float]],
-    num_classes: int,
-    use_amp: bool,
-    grad_clip: float,
-    show_progress: bool,
-    device: torch.device,
-    scaler: torch.amp.GradScaler,
-    focal_loss: nn.Module,
-    ce_loss: nn.Module,
-    use_focal: bool,
-    train_loader: DataLoader,
-    val_loader: DataLoader,
-    domain_val_loader: DataLoader,
-    use_domain_val: bool,
-    optimizer: torch.optim.Optimizer,
-    scheduler,
-    mix_cfg_b: dict,
-    history: List[Dict[str, float]],
-    wb_run: Optional["wandb.sdk.wandb_run.Run"],
-    best_f1: float,
-    best_state: Optional[dict],
-    best_metrics: Dict[str, float],
-    best_epoch: int,
-    best_source: str,
-    no_improve: int,
-    early_patience: int,
-) -> Tuple[int, float, Optional[dict], Dict[str, float], int, str, int, bool]:
-    phase_b_done = start_epoch
-    target_loader = domain_val_loader if use_domain_val else val_loader
-    for _ in range(stage_epochs):
-        train_loss, train_acc = run_epoch_fn(
-            model=model,
-            loader=train_loader,
-            optimizer=optimizer,
-            mix_cfg=mix_cfg_b,
-            num_classes=num_classes,
-            use_amp=use_amp,
-            grad_clip=grad_clip,
-            show_progress=show_progress,
-            device=device,
-            scaler=scaler,
-            focal_loss=focal_loss,
-            ce_loss=ce_loss,
-            use_focal=use_focal,
+    runtime: RuntimeSettings,
+    plan: PhaseBPlan,
+    state: TrackingState,
+) -> Tuple[int, TrackingState, bool]:
+    phase_b_done = plan.start_epoch
+    target_loader = plan.domain_val_loader if plan.use_domain_val else plan.val_loader
+    for _ in range(plan.stage_epochs):
+        train_loss, train_acc = run_epoch(
+            runtime=runtime,
+            loader=plan.train_loader,
+            optimizer=plan.optimizer,
+            mix_cfg=plan.mix_cfg,
         )
-        if scheduler:
-            scheduler.step()
-        source_metrics, _, _ = evaluate(model, target_loader, device)
+        if plan.scheduler:
+            plan.scheduler.step()
+        source_metrics, _, _ = evaluate(runtime.model, target_loader, runtime.device)
         phase_b_done += 1
 
-        (
-            best_f1,
-            best_state,
-            best_metrics,
-            best_epoch,
-            best_source,
-            improved,
-        ) = update_best_tracking(
-            model=model,
+        improved = update_best_tracking(
+            state=state,
+            model=runtime.model,
             source_metrics=source_metrics,
-            best_f1=best_f1,
-            best_state=best_state,
-            best_metrics=best_metrics,
-            best_epoch=best_epoch,
-            best_source=best_source,
             epoch=phase_b_done,
             source_name="domain_val",
         )
-        no_improve = 0 if improved else no_improve + 1
+        state.no_improve = 0 if improved else state.no_improve + 1
 
         append_phase_history(
-            history=history,
+            history=plan.history,
             phase=2,
             epoch=phase_b_done,
-            global_epoch=phase_a_epochs + phase_b_done,
+            global_epoch=plan.phase_a_epochs + phase_b_done,
             train_loss=train_loss,
             train_acc=train_acc,
             source_metrics=source_metrics,
         )
         print(
-            f"Epoch {phase_b_done}/{phase_b_total} "
+            f"Epoch {phase_b_done}/{plan.phase_b_total} "
             f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} "
             f"val_top1={source_metrics['top1']:.4f} "
             f"val_top3={source_metrics['top3']:.4f} "
             f"val_f1={source_metrics['macro_f1']:.4f}"
         )
         log_phase_epoch(
-            wb_run=wb_run,
+            wb_run=plan.wb_run,
             phase=2,
             epoch=phase_b_done,
-            global_epoch=phase_a_epochs + phase_b_done,
+            global_epoch=plan.phase_a_epochs + phase_b_done,
             train_loss=train_loss,
             train_acc=train_acc,
             source_metrics=source_metrics,
-            optimizer=optimizer,
+            optimizer=plan.optimizer,
         )
-        if early_patience > 0 and no_improve >= early_patience:
-            print(f"Early stopping in {phase_label}")
-            return phase_b_done, best_f1, best_state, best_metrics, best_epoch, best_source, no_improve, True
+        if plan.early_patience > 0 and state.no_improve >= plan.early_patience:
+            print(f"Early stopping in {plan.phase_label}")
+            return phase_b_done, state, True
 
-    return phase_b_done, best_f1, best_state, best_metrics, best_epoch, best_source, no_improve, False
+    return phase_b_done, state, False
 
 
 def execute_phase_a(
-    phase_b_only: bool,
-    phase_b_cfg: dict,
-    model: torch.nn.Module,
-    models_dir: Path,
-    artifact_dir: Path,
-    device: torch.device,
-    phase_a_cfg: dict,
-    phase_a_epochs: int,
-    train_loader: DataLoader,
-    val_loader: DataLoader,
-    domain_val_loader: DataLoader,
-    use_domain_val: bool,
-    optim_cfg: dict,
-    weight_decay: float,
-    betas: Tuple[float, ...],
-    sched_cfg: dict,
-    mix_cfg_a: dict,
-    history: List[Dict[str, float]],
-    wb_run: Optional["wandb.sdk.wandb_run.Run"],
-    best_f1: float,
-    best_state: Optional[dict],
-    best_metrics: Dict[str, float],
-    best_epoch: int,
-    best_source: str,
-    no_improve: int,
-    early_patience: int,
-    num_classes: int,
-    use_amp: bool,
-    grad_clip: float,
-    show_progress: bool,
-    scaler: torch.amp.GradScaler,
-    focal_loss: nn.Module,
-    ce_loss: nn.Module,
-    use_focal: bool,
-) -> Tuple[float, Optional[dict], Dict[str, float], int, str, int]:
-    if phase_b_only:
-        phase_a_ckpt = phase_b_cfg.get("phase_a_checkpoint")
+    runtime: RuntimeSettings,
+    context: PhaseAExecutionContext,
+    state: TrackingState,
+) -> TrackingState:
+    if context.phase_b_only:
+        phase_a_ckpt = context.phase_b_cfg.get("phase_a_checkpoint")
         if not phase_a_ckpt:
-            phase_a_ckpt = models_dir / "tier1_phase_a_latest.pt"
+            phase_a_ckpt = context.models_dir / "tier1_phase_a_latest.pt"
         phase_a_ckpt = Path(phase_a_ckpt)
         if not phase_a_ckpt.exists():
             raise FileNotFoundError(f"Phase A checkpoint not found: {phase_a_ckpt}")
-        state = torch.load(phase_a_ckpt, map_location=device, weights_only=True)
-        model.load_state_dict(state)
+        loaded_state = torch.load(phase_a_ckpt, map_location=context.device, weights_only=True)
+        runtime.model.load_state_dict(loaded_state)
         print(f"Phase A skipped. Loaded: {phase_a_ckpt}")
-        return best_f1, best_state, best_metrics, best_epoch, best_source, no_improve
+        return state
 
     print("Phase A: mixed dataset")
-    optimizer = make_optimizer(
-        model=model,
-        optim_cfg=optim_cfg,
-        weight_decay=weight_decay,
-        betas=betas,
-        lr=float(phase_a_cfg.get("lr", 1e-3)),
+    context.plan.optimizer = make_optimizer(
+        model=runtime.model,
+        optim_cfg=context.optim_cfg,
+        weight_decay=context.weight_decay,
+        betas=context.betas,
+        lr=float(context.phase_a_cfg.get("lr", 1e-3)),
     )
-    scheduler = make_scheduler(
-        sched_cfg=sched_cfg,
-        optimizer=optimizer,
-        epochs=int(phase_a_cfg.get("epochs", 10)),
-    )
-    (
-        best_f1,
-        best_state,
-        best_metrics,
-        best_epoch,
-        best_source,
-        no_improve,
-    ) = run_phase_a_epochs(
-        model=model,
-        phase_a_epochs=phase_a_epochs,
-        train_loader=train_loader,
-        val_loader=val_loader,
-        domain_val_loader=domain_val_loader,
-        use_domain_val=use_domain_val,
-        run_epoch_fn=run_epoch,
-        num_classes=num_classes,
-        use_amp=use_amp,
-        grad_clip=grad_clip,
-        show_progress=show_progress,
-        device=device,
-        scaler=scaler,
-        focal_loss=focal_loss,
-        ce_loss=ce_loss,
-        use_focal=use_focal,
-        optimizer=optimizer,
-        scheduler=scheduler,
-        mix_cfg_a=mix_cfg_a,
-        history=history,
-        wb_run=wb_run,
-        best_f1=best_f1,
-        best_state=best_state,
-        best_metrics=best_metrics,
-        best_epoch=best_epoch,
-        best_source=best_source,
-        no_improve=no_improve,
-        early_patience=early_patience,
+    context.plan.scheduler = make_scheduler(
+        sched_cfg=context.sched_cfg,
+        optimizer=context.plan.optimizer,
+        epochs=int(context.phase_a_cfg.get("epochs", 10)),
     )
 
-    phase_a_path = save_phase_a_latest(model, artifact_dir, models_dir)
+    state = run_phase_a_epochs(runtime=runtime, plan=context.plan, state=state)
+    phase_a_path = save_phase_a_latest(runtime.model, context.artifact_dir, context.models_dir)
     print(f"Saved Phase A latest -> {phase_a_path}")
-    return best_f1, best_state, best_metrics, best_epoch, best_source, no_improve
+    return state
 
 
 def evaluate_all_splits(
@@ -1650,13 +1564,7 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def main() -> None:
-    args = parse_args()
-    cfg = load_yaml(args.config)
-
-    seed = int(cfg.get("seed", 42))
-    set_seed(seed)
-
+def resolve_device(cfg: dict) -> torch.device:
     device_name = cfg.get("device", "cuda")
     require_cuda = bool(cfg.get("require_cuda", False))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -1664,10 +1572,66 @@ def main() -> None:
         device = torch.device("cpu")
     if require_cuda and device.type != "cuda":
         raise RuntimeError("CUDA required but not available")
+    return device
 
+
+def resolve_labels(cfg: dict) -> List[str]:
     labels = cfg.get("labels", [])
     if not labels:
         raise ValueError("labels is empty in train config")
+    return labels
+
+
+def update_wandb_data_summary(
+    wb_run: Optional["wandb.sdk.wandb_run.Run"],
+    train_csv: Path,
+    val_csv: Path,
+    test_csv: Path,
+    g3_data_dir: Path,
+) -> None:
+    if wb_run is None:
+        return
+    wb_run.summary["train_csv"] = str(train_csv)
+    wb_run.summary["val_csv"] = str(val_csv)
+    wb_run.summary["test_csv"] = str(test_csv)
+    wb_run.summary["domain_dir"] = str(g3_data_dir)
+
+
+def finish_wandb_run(
+    wb_run: Optional["wandb.sdk.wandb_run.Run"],
+    best_epoch: int,
+    best_source: str,
+    best_f1: float,
+    val_metrics: Dict[str, float],
+    test_metrics: Dict[str, float],
+) -> None:
+    if wb_run is None:
+        return
+    wb_run.summary.update(
+        {
+            "best_epoch": best_epoch,
+            "best_source": best_source,
+            "best_f1": best_f1,
+            "val_top1": val_metrics["top1"],
+            "val_top3": val_metrics["top3"],
+            "val_f1": val_metrics["macro_f1"],
+            "test_top1": test_metrics["top1"],
+            "test_top3": test_metrics["top3"],
+            "test_f1": test_metrics["macro_f1"],
+        }
+    )
+    wb_run.finish()
+
+
+def main() -> None:
+    args = parse_args()
+    cfg = load_yaml(args.config)
+
+    seed = int(cfg.get("seed", 42))
+    set_seed(seed)
+
+    device = resolve_device(cfg)
+    labels = resolve_labels(cfg)
     label_to_idx = {name: i for i, name in enumerate(labels)}
 
     model_cfg = cfg.get("model", {})
@@ -1742,11 +1706,13 @@ def main() -> None:
         yaml.safe_dump(cfg, f, sort_keys=False)
 
     wb_run = setup_wandb(cfg, run_dir, run_name)
-    if wb_run is not None:
-        wb_run.summary["train_csv"] = str(train_csv)
-        wb_run.summary["val_csv"] = str(val_csv)
-        wb_run.summary["test_csv"] = str(test_csv)
-        wb_run.summary["domain_dir"] = str(g3_data_dir)
+    update_wandb_data_summary(
+        wb_run=wb_run,
+        train_csv=train_csv,
+        val_csv=val_csv,
+        test_csv=test_csv,
+        g3_data_dir=g3_data_dir,
+    )
 
     phase_a = cfg.get("phase_a", {})
     phase_b = cfg.get("phase_b", {})
@@ -1914,50 +1880,65 @@ def main() -> None:
     history: List[Dict[str, float]] = []
 
     scaler = torch.amp.GradScaler(device="cuda", enabled=use_amp)
-
-    (
-        best_f1,
-        best_state,
-        best_metrics,
-        best_epoch,
-        best_source,
-        no_improve,
-    ) = execute_phase_a(
-        phase_b_only=phase_b_only,
-        phase_b_cfg=phase_b,
+    runtime = RuntimeSettings(
         model=model,
-        models_dir=models_dir,
-        artifact_dir=artifact_dir,
+        num_classes=len(labels),
+        use_amp=use_amp,
+        grad_clip=grad_clip,
+        show_progress=show_progress,
         device=device,
-        phase_a_cfg=phase_a,
-        phase_a_epochs=phase_a_epochs,
-        train_loader=train_loader,
-        val_loader=val_loader,
-        domain_val_loader=domain_val_loader,
-        use_domain_val=use_domain_val,
-        optim_cfg=optim_cfg,
-        weight_decay=weight_decay,
-        betas=betas,
-        sched_cfg=sched_cfg,
-        mix_cfg_a=mix_cfg_a,
-        history=history,
-        wb_run=wb_run,
+        scaler=scaler,
+        focal_loss=focal_loss,
+        ce_loss=ce_loss,
+        use_focal=use_focal,
+    )
+    tracking_state = TrackingState(
         best_f1=best_f1,
         best_state=best_state,
         best_metrics=best_metrics,
         best_epoch=best_epoch,
         best_source=best_source,
         no_improve=no_improve,
-        early_patience=early_patience,
-        num_classes=len(labels),
-        use_amp=use_amp,
-        grad_clip=grad_clip,
-        show_progress=show_progress,
-        scaler=scaler,
-        focal_loss=focal_loss,
-        ce_loss=ce_loss,
-        use_focal=use_focal,
     )
+    phase_a_plan = PhaseAPlan(
+        epochs=phase_a_epochs,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        domain_val_loader=domain_val_loader,
+        use_domain_val=use_domain_val,
+        optimizer=make_optimizer(
+            model=model,
+            optim_cfg=optim_cfg,
+            weight_decay=weight_decay,
+            betas=betas,
+            lr=float(phase_a.get("lr", 1e-3)),
+        ),
+        scheduler=None,
+        mix_cfg=mix_cfg_a,
+        history=history,
+        wb_run=wb_run,
+        early_patience=early_patience,
+    )
+    phase_a_ctx = PhaseAExecutionContext(
+        phase_b_only=phase_b_only,
+        phase_b_cfg=phase_b,
+        models_dir=models_dir,
+        artifact_dir=artifact_dir,
+        device=device,
+        phase_a_cfg=phase_a,
+        plan=phase_a_plan,
+        optim_cfg=optim_cfg,
+        weight_decay=weight_decay,
+        betas=betas,
+        sched_cfg=sched_cfg,
+    )
+    tracking_state = execute_phase_a(runtime=runtime, context=phase_a_ctx, state=tracking_state)
+    best_f1 = tracking_state.best_f1
+    best_state = tracking_state.best_state
+    best_metrics = tracking_state.best_metrics
+    best_epoch = tracking_state.best_epoch
+    best_source = tracking_state.best_source
+    no_improve = tracking_state.no_improve
 
     print("Phase B: domain fine-tune")
     phase_b_lr = float(phase_b.get("lr", 2e-4))
@@ -1993,49 +1974,40 @@ def main() -> None:
             epochs=min(freeze_epochs, phase_b_total),
             override=phase_b_sched,
         )
-        (
-            phase_b_done,
-            best_f1,
-            best_state,
-            best_metrics,
-            best_epoch,
-            best_source,
-            no_improve,
-            stopped_b1,
-        ) = run_phase_b_substage(
+        tracking_state.best_f1 = best_f1
+        tracking_state.best_state = best_state
+        tracking_state.best_metrics = best_metrics
+        tracking_state.best_epoch = best_epoch
+        tracking_state.best_source = best_source
+        tracking_state.no_improve = no_improve
+        phase_b1_plan = PhaseBPlan(
             phase_label="Phase B1",
-            model=model,
             start_epoch=phase_b_done,
             stage_epochs=min(freeze_epochs, phase_b_total),
             phase_a_epochs=phase_a_epochs,
             phase_b_total=phase_b_total,
-            run_epoch_fn=run_epoch,
-            num_classes=len(labels),
-            use_amp=use_amp,
-            grad_clip=grad_clip,
-            show_progress=show_progress,
-            device=device,
-            scaler=scaler,
-            focal_loss=focal_loss,
-            ce_loss=ce_loss,
-            use_focal=use_focal,
             train_loader=domain_train_loader,
             val_loader=val_loader,
             domain_val_loader=domain_val_loader,
             use_domain_val=use_domain_val,
             optimizer=optimizer,
             scheduler=scheduler,
-            mix_cfg_b=mix_cfg_b,
+            mix_cfg=mix_cfg_b,
             history=history,
             wb_run=wb_run,
-            best_f1=best_f1,
-            best_state=best_state,
-            best_metrics=best_metrics,
-            best_epoch=best_epoch,
-            best_source=best_source,
-            no_improve=no_improve,
             early_patience=early_patience,
         )
+        phase_b_done, tracking_state, stopped_b1 = run_phase_b_substage(
+            runtime=runtime,
+            plan=phase_b1_plan,
+            state=tracking_state,
+        )
+        best_f1 = tracking_state.best_f1
+        best_state = tracking_state.best_state
+        best_metrics = tracking_state.best_metrics
+        best_epoch = tracking_state.best_epoch
+        best_source = tracking_state.best_source
+        no_improve = tracking_state.no_improve
     else:
         stopped_b1 = False
 
@@ -2063,49 +2035,40 @@ def main() -> None:
             override=phase_b_sched,
         )
         no_improve = 0
-        (
-            phase_b_done,
-            best_f1,
-            best_state,
-            best_metrics,
-            best_epoch,
-            best_source,
-            no_improve,
-            _,
-        ) = run_phase_b_substage(
+        tracking_state.best_f1 = best_f1
+        tracking_state.best_state = best_state
+        tracking_state.best_metrics = best_metrics
+        tracking_state.best_epoch = best_epoch
+        tracking_state.best_source = best_source
+        tracking_state.no_improve = no_improve
+        phase_b2_plan = PhaseBPlan(
             phase_label="Phase B2",
-            model=model,
             start_epoch=phase_b_done,
             stage_epochs=remaining,
             phase_a_epochs=phase_a_epochs,
             phase_b_total=phase_b_total,
-            run_epoch_fn=run_epoch,
-            num_classes=len(labels),
-            use_amp=use_amp,
-            grad_clip=grad_clip,
-            show_progress=show_progress,
-            device=device,
-            scaler=scaler,
-            focal_loss=focal_loss,
-            ce_loss=ce_loss,
-            use_focal=use_focal,
             train_loader=domain_train_loader,
             val_loader=val_loader,
             domain_val_loader=domain_val_loader,
             use_domain_val=use_domain_val,
             optimizer=optimizer,
             scheduler=scheduler,
-            mix_cfg_b=mix_cfg_b,
+            mix_cfg=mix_cfg_b,
             history=history,
             wb_run=wb_run,
-            best_f1=best_f1,
-            best_state=best_state,
-            best_metrics=best_metrics,
-            best_epoch=best_epoch,
-            best_source=best_source,
-            no_improve=no_improve,
             early_patience=early_patience,
         )
+        phase_b_done, tracking_state, _ = run_phase_b_substage(
+            runtime=runtime,
+            plan=phase_b2_plan,
+            state=tracking_state,
+        )
+        best_f1 = tracking_state.best_f1
+        best_state = tracking_state.best_state
+        best_metrics = tracking_state.best_metrics
+        best_epoch = tracking_state.best_epoch
+        best_source = tracking_state.best_source
+        no_improve = tracking_state.no_improve
 
     if best_state is None:
         best_state = model.state_dict()
@@ -2178,21 +2141,14 @@ def main() -> None:
         "git_commit": get_git_commit(Path.cwd()),
     }
     save_json(artifact_dir / "run_summary.json", summary)
-    if wb_run is not None:
-        wb_run.summary.update(
-            {
-                "best_epoch": best_epoch,
-                "best_source": best_source,
-                "best_f1": best_f1,
-                "val_top1": val_metrics["top1"],
-                "val_top3": val_metrics["top3"],
-                "val_f1": val_metrics["macro_f1"],
-                "test_top1": test_metrics["top1"],
-                "test_top3": test_metrics["top3"],
-                "test_f1": test_metrics["macro_f1"],
-            }
-        )
-        wb_run.finish()
+    finish_wandb_run(
+        wb_run=wb_run,
+        best_epoch=best_epoch,
+        best_source=best_source,
+        best_f1=best_f1,
+        val_metrics=val_metrics,
+        test_metrics=test_metrics,
+    )
 
     last_run_path = output_root / "last_run.txt"
     last_run_path.write_text(str(artifact_dir), encoding="utf-8")

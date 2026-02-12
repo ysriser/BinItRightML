@@ -11,6 +11,7 @@ import csv
 import json
 import logging
 import random
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -472,62 +473,72 @@ def maybe_save_best_checkpoint(
     return val_f1, True
 
 
+@dataclass
+class StageRuntimeContext:
+    model: nn.Module
+    train_loader: DataLoader
+    val_loader: DataLoader
+    optimizer: torch.optim.Optimizer
+    scheduler: object | None
+    criterion: nn.Module
+    device: torch.device
+    scaler: torch.amp.GradScaler
+    use_amp: bool
+    grad_clip: float
+    show_progress: bool
+    labels: List[str]
+    infer_topk: int
+    run_dir: Path
+    best_path: Path
+    early_stop_patience: int
+
+
+@dataclass
+class StageMutableState:
+    best_f1: float
+    no_improve: int
+    history: List[Dict[str, float]]
+
+
 def run_training_stage(
-    model: nn.Module,
+    context: StageRuntimeContext,
+    state: StageMutableState,
     stage: int,
     epoch_start: int,
     epoch_end: int,
     total_epochs: int,
-    train_loader: DataLoader,
-    val_loader: DataLoader,
-    optimizer: torch.optim.Optimizer,
-    scheduler,
-    criterion: nn.Module,
-    device: torch.device,
-    scaler: torch.amp.GradScaler,
-    use_amp: bool,
-    grad_clip: float,
-    show_progress: bool,
-    labels: List[str],
-    infer_topk: int,
-    run_dir: Path,
-    best_path: Path,
-    best_f1: float,
-    no_improve: int,
-    early_stop_patience: int,
-    history: List[Dict[str, float]],
-) -> Tuple[float, int, bool]:
+) -> Tuple[StageMutableState, bool]:
     for epoch in range(epoch_start, epoch_end + 1):
         train_loss, train_acc = run_train_epoch(
-            model=model,
-            train_loader=train_loader,
-            optimizer=optimizer,
-            criterion=criterion,
-            device=device,
-            scaler=scaler,
-            use_amp=use_amp,
-            grad_clip=grad_clip,
-            show_progress=show_progress,
+            model=context.model,
+            train_loader=context.train_loader,
+            optimizer=context.optimizer,
+            criterion=context.criterion,
+            device=context.device,
+            scaler=context.scaler,
+            use_amp=context.use_amp,
+            grad_clip=context.grad_clip,
+            show_progress=context.show_progress,
             epoch_idx=epoch,
             total_epochs=total_epochs,
         )
-        if scheduler:
-            scheduler.step()
+        if context.scheduler:
+            context.scheduler.step()
         val_metrics, val_labels, val_preds = collect_predictions(
-            model,
-            val_loader,
-            device,
-            len(labels),
-            topk=infer_topk,
+            context.model,
+            context.val_loader,
+            context.device,
+            len(context.labels),
+            topk=context.infer_topk,
         )
         print(
             f"val_top1={val_metrics['top1']:.4f} val_top3={val_metrics['top3']:.4f} val_f1={val_metrics['macro_f1']:.4f}"
         )
-        history.append(
+        state.history.append(
             {
                 "epoch": epoch,
                 "stage": stage,
-                "lr": optimizer.param_groups[0]["lr"],
+                "lr": context.optimizer.param_groups[0]["lr"],
                 "train_loss": train_loss,
                 "train_acc": train_acc,
                 "val_top1": val_metrics["top1"],
@@ -535,23 +546,23 @@ def run_training_stage(
                 "val_f1": val_metrics["macro_f1"],
             }
         )
-        best_f1, improved = maybe_save_best_checkpoint(
-            model=model,
-            best_path=best_path,
-            run_dir=run_dir,
-            labels=labels,
+        state.best_f1, improved = maybe_save_best_checkpoint(
+            model=context.model,
+            best_path=context.best_path,
+            run_dir=context.run_dir,
+            labels=context.labels,
             val_labels=val_labels,
             val_preds=val_preds,
             val_f1=val_metrics["macro_f1"],
-            best_f1=best_f1,
+            best_f1=state.best_f1,
         )
         if improved:
-            no_improve = 0
+            state.no_improve = 0
             continue
-        no_improve += 1
-        if early_stop_patience > 0 and no_improve >= early_stop_patience:
-            return best_f1, no_improve, True
-    return best_f1, no_improve, False
+        state.no_improve += 1
+        if context.early_stop_patience > 0 and state.no_improve >= context.early_stop_patience:
+            return state, True
+    return state, False
 
 
 def parse_args() -> argparse.Namespace:
@@ -676,6 +687,11 @@ def main() -> None:
     scaler = torch.amp.GradScaler(device="cuda", enabled=use_amp)
     history: List[Dict[str, float]] = []
     infer_topk = int(infer_cfg.get("topk", 3))
+    stage_state = StageMutableState(
+        best_f1=best_f1,
+        no_improve=0,
+        history=history,
+    )
 
     set_classifier_trainable_only(model)
 
@@ -686,15 +702,8 @@ def main() -> None:
         betas=betas,
     )
     scheduler = make_scheduler(scheduler_enabled, scheduler_name, min_lr, optimizer, freeze_epochs)
-
-    no_improve = 0
-    total_epochs = freeze_epochs + finetune_epochs
-    best_f1, no_improve, stop_early = run_training_stage(
+    stage_context = StageRuntimeContext(
         model=model,
-        stage=1,
-        epoch_start=1,
-        epoch_end=freeze_epochs,
-        total_epochs=total_epochs,
         train_loader=train_loader,
         val_loader=val_loader,
         optimizer=optimizer,
@@ -709,10 +718,16 @@ def main() -> None:
         infer_topk=infer_topk,
         run_dir=run_dir,
         best_path=best_path,
-        best_f1=best_f1,
-        no_improve=no_improve,
         early_stop_patience=early_stop_patience,
-        history=history,
+    )
+    total_epochs = freeze_epochs + finetune_epochs
+    stage_state, stop_early = run_training_stage(
+        context=stage_context,
+        state=stage_state,
+        stage=1,
+        epoch_start=1,
+        epoch_end=freeze_epochs,
+        total_epochs=total_epochs,
     )
 
     if not stop_early and finetune_epochs > 0:
@@ -724,33 +739,18 @@ def main() -> None:
             betas=betas,
         )
         scheduler = make_scheduler(scheduler_enabled, scheduler_name, min_lr, optimizer, finetune_epochs)
-        _, _, _ = run_training_stage(
-            model=model,
+        stage_context.optimizer = optimizer
+        stage_context.scheduler = scheduler
+        stage_state, _ = run_training_stage(
+            context=stage_context,
+            state=stage_state,
             stage=2,
             epoch_start=freeze_epochs + 1,
             epoch_end=freeze_epochs + finetune_epochs,
             total_epochs=total_epochs,
-            train_loader=train_loader,
-            val_loader=val_loader,
-            optimizer=optimizer,
-            scheduler=scheduler,
-            criterion=criterion,
-            device=device,
-            scaler=scaler,
-            use_amp=use_amp,
-            grad_clip=grad_clip,
-            show_progress=show_progress,
-            labels=labels,
-            infer_topk=infer_topk,
-            run_dir=run_dir,
-            best_path=best_path,
-            best_f1=best_f1,
-            no_improve=no_improve,
-            early_stop_patience=early_stop_patience,
-            history=history,
         )
 
-    save_history(history, run_dir)
+    save_history(stage_state.history, run_dir)
 
     model.load_state_dict(torch.load(best_path, map_location=device, weights_only=True))
     test_metrics, test_labels, test_preds = collect_predictions(

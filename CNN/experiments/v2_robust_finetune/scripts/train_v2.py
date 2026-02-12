@@ -2014,11 +2014,6 @@ def main() -> None:
     early_patience = int(train_cfg.get("early_stop_patience", 0))
     show_progress = bool(train_cfg.get("show_progress", True))
 
-    best_f1 = -1.0
-    best_state: Optional[dict] = None
-    best_metrics: Dict[str, float] = {}
-    best_epoch = 0
-    best_source = "val"
     history: List[Dict[str, float]] = []
 
     scaler = torch.amp.GradScaler(device="cuda", enabled=use_amp)
@@ -2035,11 +2030,11 @@ def main() -> None:
         use_focal=use_focal,
     )
     tracking_state = TrackingState(
-        best_f1=best_f1,
-        best_state=best_state,
-        best_metrics=best_metrics,
-        best_epoch=best_epoch,
-        best_source=best_source,
+        best_f1=-1.0,
+        best_state=None,
+        best_metrics={},
+        best_epoch=0,
+        best_source="val",
         no_improve=0,
     )
     phase_a_plan = PhaseAPlan(
@@ -2075,11 +2070,6 @@ def main() -> None:
         sched_cfg=sched_cfg,
     )
     tracking_state = execute_phase_a(runtime=runtime, context=phase_a_ctx, state=tracking_state)
-    best_f1 = tracking_state.best_f1
-    best_state = tracking_state.best_state
-    best_metrics = tracking_state.best_metrics
-    best_epoch = tracking_state.best_epoch
-    best_source = tracking_state.best_source
     phase_b_context = PhaseBExecutionContext(
         phase_b_cfg=phase_b,
         phase_a_epochs=phase_a_epochs,
@@ -2102,11 +2092,7 @@ def main() -> None:
         context=phase_b_context,
         state=tracking_state,
     )
-    best_f1 = tracking_state.best_f1
     best_state = tracking_state.best_state
-    best_metrics = tracking_state.best_metrics
-    best_epoch = tracking_state.best_epoch
-    best_source = tracking_state.best_source
 
     if best_state is None:
         best_state = model.state_dict()
@@ -2168,9 +2154,9 @@ def main() -> None:
     phase_summary = summarize_phases(history)
     summary = {
         "run_name": run_name,
-        "best_epoch": best_epoch,
-        "best_source": best_source,
-        "best_metrics": best_metrics,
+        "best_epoch": tracking_state.best_epoch,
+        "best_source": tracking_state.best_source,
+        "best_metrics": tracking_state.best_metrics,
         "val_metrics": val_metrics,
         "test_metrics": test_metrics,
         "domain_val_metrics": domain_metrics,
@@ -2181,9 +2167,9 @@ def main() -> None:
     save_json(artifact_dir / "run_summary.json", summary)
     finish_wandb_run(
         wb_run=wb_run,
-        best_epoch=best_epoch,
-        best_source=best_source,
-        best_f1=best_f1,
+        best_epoch=tracking_state.best_epoch,
+        best_source=tracking_state.best_source,
+        best_f1=tracking_state.best_f1,
         val_metrics=val_metrics,
         test_metrics=test_metrics,
     )

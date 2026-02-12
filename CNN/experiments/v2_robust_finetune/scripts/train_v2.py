@@ -143,6 +143,25 @@ class PhaseAExecutionContext:
     sched_cfg: dict
 
 
+@dataclass
+class PhaseBExecutionContext:
+    phase_b_cfg: dict
+    phase_a_epochs: int
+    phase_b_epochs: int
+    domain_train_loader: DataLoader
+    val_loader: DataLoader
+    domain_val_loader: DataLoader
+    use_domain_val: bool
+    optim_cfg: dict
+    weight_decay: float
+    betas: Tuple[float, ...]
+    sched_cfg: dict
+    mix_cfg: dict
+    history: List[Dict[str, float]]
+    wb_run: Optional["wandb.sdk.wandb_run.Run"]
+    early_patience: int
+
+
 def set_seed(seed: int) -> None:
     global NUMPY_RNG
     random.seed(seed)
@@ -1623,6 +1642,130 @@ def finish_wandb_run(
     wb_run.finish()
 
 
+def _build_phase_b_plan(
+    context: PhaseBExecutionContext,
+    phase_label: str,
+    start_epoch: int,
+    stage_epochs: int,
+    phase_b_total: int,
+    optimizer: torch.optim.Optimizer,
+    scheduler: object | None,
+) -> PhaseBPlan:
+    return PhaseBPlan(
+        phase_label=phase_label,
+        start_epoch=start_epoch,
+        stage_epochs=stage_epochs,
+        phase_a_epochs=context.phase_a_epochs,
+        phase_b_total=phase_b_total,
+        train_loader=context.domain_train_loader,
+        val_loader=context.val_loader,
+        domain_val_loader=context.domain_val_loader,
+        use_domain_val=context.use_domain_val,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        mix_cfg=context.mix_cfg,
+        history=context.history,
+        wb_run=context.wb_run,
+        early_patience=context.early_patience,
+    )
+
+
+def run_phase_b(
+    runtime: RuntimeSettings,
+    context: PhaseBExecutionContext,
+    state: TrackingState,
+) -> TrackingState:
+    print("Phase B: domain fine-tune")
+    phase_b_lr = float(context.phase_b_cfg.get("lr", 2e-4))
+    phase_b_sched = context.phase_b_cfg.get("scheduler", {})
+    freeze_epochs = int(context.phase_b_cfg.get("freeze_epochs", 0))
+    head_lr = float(context.phase_b_cfg.get("head_lr", phase_b_lr))
+    backbone_lr = float(context.phase_b_cfg.get("backbone_lr", phase_b_lr * 0.25))
+    phase_b_total = context.phase_b_epochs
+    phase_b_done = 0
+    state.no_improve = 0
+    backbone_params, head_params = split_backbone_head_params(runtime.model)
+    stopped_b1 = False
+
+    if freeze_epochs > 0 and head_params:
+        print(
+            f"Phase B1: head-only fine-tune for {freeze_epochs} epoch(s) "
+            f"(head_lr={head_lr})"
+        )
+        set_requires_grad(backbone_params, False)
+        set_requires_grad(head_params, True)
+        optimizer = make_optimizer_split(
+            optim_cfg=context.optim_cfg,
+            weight_decay=context.weight_decay,
+            betas=context.betas,
+            backbone_params=[],
+            head_params=head_params,
+            backbone_lr=backbone_lr,
+            head_lr=head_lr,
+        )
+        scheduler = make_scheduler(
+            sched_cfg=context.sched_cfg,
+            optimizer=optimizer,
+            epochs=min(freeze_epochs, phase_b_total),
+            override=phase_b_sched,
+        )
+        plan = _build_phase_b_plan(
+            context=context,
+            phase_label="Phase B1",
+            start_epoch=phase_b_done,
+            stage_epochs=min(freeze_epochs, phase_b_total),
+            phase_b_total=phase_b_total,
+            optimizer=optimizer,
+            scheduler=scheduler,
+        )
+        phase_b_done, state, stopped_b1 = run_phase_b_substage(
+            runtime=runtime,
+            plan=plan,
+            state=state,
+        )
+
+    if phase_b_done < phase_b_total and not stopped_b1:
+        remaining = phase_b_total - phase_b_done
+        print(
+            f"Phase B2: full fine-tune for {remaining} epoch(s) "
+            f"(backbone_lr={backbone_lr}, head_lr={head_lr})"
+        )
+        set_requires_grad(backbone_params, True)
+        set_requires_grad(head_params, True)
+        optimizer = make_optimizer_split(
+            optim_cfg=context.optim_cfg,
+            weight_decay=context.weight_decay,
+            betas=context.betas,
+            backbone_params=backbone_params,
+            head_params=head_params,
+            backbone_lr=backbone_lr,
+            head_lr=head_lr,
+        )
+        scheduler = make_scheduler(
+            sched_cfg=context.sched_cfg,
+            optimizer=optimizer,
+            epochs=remaining,
+            override=phase_b_sched,
+        )
+        state.no_improve = 0
+        plan = _build_phase_b_plan(
+            context=context,
+            phase_label="Phase B2",
+            start_epoch=phase_b_done,
+            stage_epochs=remaining,
+            phase_b_total=phase_b_total,
+            optimizer=optimizer,
+            scheduler=scheduler,
+        )
+        _, state, _ = run_phase_b_substage(
+            runtime=runtime,
+            plan=plan,
+            state=state,
+        )
+
+    return state
+
+
 def main() -> None:
     args = parse_args()
     cfg = load_yaml(args.config)
@@ -1876,7 +2019,6 @@ def main() -> None:
     best_metrics: Dict[str, float] = {}
     best_epoch = 0
     best_source = "val"
-    no_improve = 0
     history: List[Dict[str, float]] = []
 
     scaler = torch.amp.GradScaler(device="cuda", enabled=use_amp)
@@ -1898,7 +2040,7 @@ def main() -> None:
         best_metrics=best_metrics,
         best_epoch=best_epoch,
         best_source=best_source,
-        no_improve=no_improve,
+        no_improve=0,
     )
     phase_a_plan = PhaseAPlan(
         epochs=phase_a_epochs,
@@ -1938,137 +2080,33 @@ def main() -> None:
     best_metrics = tracking_state.best_metrics
     best_epoch = tracking_state.best_epoch
     best_source = tracking_state.best_source
-    no_improve = tracking_state.no_improve
-
-    print("Phase B: domain fine-tune")
-    phase_b_lr = float(phase_b.get("lr", 2e-4))
-    phase_b_sched = phase_b.get("scheduler", {})
-    freeze_epochs = int(phase_b.get("freeze_epochs", 0))
-    head_lr = float(phase_b.get("head_lr", phase_b_lr))
-    backbone_lr = float(phase_b.get("backbone_lr", phase_b_lr * 0.25))
-    phase_b_total = phase_b_epochs
-    phase_b_done = 0
-    no_improve = 0
-
-    backbone_params, head_params = split_backbone_head_params(model)
-
-    if freeze_epochs > 0 and head_params:
-        print(
-            f"Phase B1: head-only fine-tune for {freeze_epochs} epoch(s) "
-            f"(head_lr={head_lr})"
-        )
-        set_requires_grad(backbone_params, False)
-        set_requires_grad(head_params, True)
-        optimizer = make_optimizer_split(
-            optim_cfg=optim_cfg,
-            weight_decay=weight_decay,
-            betas=betas,
-            backbone_params=[],
-            head_params=head_params,
-            backbone_lr=backbone_lr,
-            head_lr=head_lr,
-        )
-        scheduler = make_scheduler(
-            sched_cfg=sched_cfg,
-            optimizer=optimizer,
-            epochs=min(freeze_epochs, phase_b_total),
-            override=phase_b_sched,
-        )
-        tracking_state.best_f1 = best_f1
-        tracking_state.best_state = best_state
-        tracking_state.best_metrics = best_metrics
-        tracking_state.best_epoch = best_epoch
-        tracking_state.best_source = best_source
-        tracking_state.no_improve = no_improve
-        phase_b1_plan = PhaseBPlan(
-            phase_label="Phase B1",
-            start_epoch=phase_b_done,
-            stage_epochs=min(freeze_epochs, phase_b_total),
-            phase_a_epochs=phase_a_epochs,
-            phase_b_total=phase_b_total,
-            train_loader=domain_train_loader,
-            val_loader=val_loader,
-            domain_val_loader=domain_val_loader,
-            use_domain_val=use_domain_val,
-            optimizer=optimizer,
-            scheduler=scheduler,
-            mix_cfg=mix_cfg_b,
-            history=history,
-            wb_run=wb_run,
-            early_patience=early_patience,
-        )
-        phase_b_done, tracking_state, stopped_b1 = run_phase_b_substage(
-            runtime=runtime,
-            plan=phase_b1_plan,
-            state=tracking_state,
-        )
-        best_f1 = tracking_state.best_f1
-        best_state = tracking_state.best_state
-        best_metrics = tracking_state.best_metrics
-        best_epoch = tracking_state.best_epoch
-        best_source = tracking_state.best_source
-        no_improve = tracking_state.no_improve
-    else:
-        stopped_b1 = False
-
-    if phase_b_done < phase_b_total and not stopped_b1:
-        remaining = phase_b_total - phase_b_done
-        print(
-            f"Phase B2: full fine-tune for {remaining} epoch(s) "
-            f"(backbone_lr={backbone_lr}, head_lr={head_lr})"
-        )
-        set_requires_grad(backbone_params, True)
-        set_requires_grad(head_params, True)
-        optimizer = make_optimizer_split(
-            optim_cfg=optim_cfg,
-            weight_decay=weight_decay,
-            betas=betas,
-            backbone_params=backbone_params,
-            head_params=head_params,
-            backbone_lr=backbone_lr,
-            head_lr=head_lr,
-        )
-        scheduler = make_scheduler(
-            sched_cfg=sched_cfg,
-            optimizer=optimizer,
-            epochs=remaining,
-            override=phase_b_sched,
-        )
-        no_improve = 0
-        tracking_state.best_f1 = best_f1
-        tracking_state.best_state = best_state
-        tracking_state.best_metrics = best_metrics
-        tracking_state.best_epoch = best_epoch
-        tracking_state.best_source = best_source
-        tracking_state.no_improve = no_improve
-        phase_b2_plan = PhaseBPlan(
-            phase_label="Phase B2",
-            start_epoch=phase_b_done,
-            stage_epochs=remaining,
-            phase_a_epochs=phase_a_epochs,
-            phase_b_total=phase_b_total,
-            train_loader=domain_train_loader,
-            val_loader=val_loader,
-            domain_val_loader=domain_val_loader,
-            use_domain_val=use_domain_val,
-            optimizer=optimizer,
-            scheduler=scheduler,
-            mix_cfg=mix_cfg_b,
-            history=history,
-            wb_run=wb_run,
-            early_patience=early_patience,
-        )
-        phase_b_done, tracking_state, _ = run_phase_b_substage(
-            runtime=runtime,
-            plan=phase_b2_plan,
-            state=tracking_state,
-        )
-        best_f1 = tracking_state.best_f1
-        best_state = tracking_state.best_state
-        best_metrics = tracking_state.best_metrics
-        best_epoch = tracking_state.best_epoch
-        best_source = tracking_state.best_source
-        no_improve = tracking_state.no_improve
+    phase_b_context = PhaseBExecutionContext(
+        phase_b_cfg=phase_b,
+        phase_a_epochs=phase_a_epochs,
+        phase_b_epochs=phase_b_epochs,
+        domain_train_loader=domain_train_loader,
+        val_loader=val_loader,
+        domain_val_loader=domain_val_loader,
+        use_domain_val=use_domain_val,
+        optim_cfg=optim_cfg,
+        weight_decay=weight_decay,
+        betas=betas,
+        sched_cfg=sched_cfg,
+        mix_cfg=mix_cfg_b,
+        history=history,
+        wb_run=wb_run,
+        early_patience=early_patience,
+    )
+    tracking_state = run_phase_b(
+        runtime=runtime,
+        context=phase_b_context,
+        state=tracking_state,
+    )
+    best_f1 = tracking_state.best_f1
+    best_state = tracking_state.best_state
+    best_metrics = tracking_state.best_metrics
+    best_epoch = tracking_state.best_epoch
+    best_source = tracking_state.best_source
 
     if best_state is None:
         best_state = model.state_dict()

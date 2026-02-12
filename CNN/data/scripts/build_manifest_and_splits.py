@@ -462,6 +462,36 @@ def write_manifest_and_splits(
             writer.writerows(split_rows[split])
 
 
+def _attempt_link(create_link_fn, src_path: Path, dst_path: Path) -> bool:
+    try:
+        create_link_fn(src_path, dst_path)
+        return True
+    except OSError:
+        return False
+
+
+def _create_data_link(
+    src_path: Path,
+    dst_path: Path,
+    method: str,
+) -> None:
+    if method in ("auto", "symlink") and _attempt_link(os.symlink, src_path, dst_path):
+        return
+    if method in ("auto", "hardlink") and _attempt_link(os.link, src_path, dst_path):
+        return
+    if method in ("auto", "copy"):
+        shutil.copy2(src_path, dst_path)
+
+
+def _iter_split_items(
+    splits: List[str],
+    split_rows: Dict[str, List[Dict[str, str]]],
+):
+    for split in splits:
+        for item in split_rows[split]:
+            yield split, item
+
+
 def maybe_create_links(
     cfg: dict,
     splits: List[str],
@@ -473,30 +503,15 @@ def maybe_create_links(
     links_cfg = cfg.get("links", {})
     method = links_cfg.get("method", "auto")
     out_dir = Path(links_cfg.get("out_dir", "CNN/data/merged_tier1"))
-    for split in splits:
-        for item in split_rows[split]:
-            label = item["final_label"]
-            src_path = root / item["filepath"]
-            dst_dir = out_dir / split / label
-            dst_dir.mkdir(parents=True, exist_ok=True)
-            dst_path = dst_dir / Path(item["filepath"]).name
-            if dst_path.exists():
-                continue
-            created = False
-            if method in ("auto", "symlink"):
-                try:
-                    os.symlink(src_path, dst_path)
-                    created = True
-                except OSError:
-                    created = False
-            if not created and method in ("auto", "hardlink"):
-                try:
-                    os.link(src_path, dst_path)
-                    created = True
-                except OSError:
-                    created = False
-            if not created and method in ("auto", "copy"):
-                shutil.copy2(src_path, dst_path)
+    for split, item in _iter_split_items(splits, split_rows):
+        label = item["final_label"]
+        src_path = root / item["filepath"]
+        dst_dir = out_dir / split / label
+        dst_dir.mkdir(parents=True, exist_ok=True)
+        dst_path = dst_dir / Path(item["filepath"]).name
+        if dst_path.exists():
+            continue
+        _create_data_link(src_path, dst_path, method)
 
 
 def build_stats_payload(
